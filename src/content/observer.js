@@ -10,29 +10,20 @@ const PLAN_KEYWORDS = ['Free', 'Pro', 'Basic', 'Enterprise', 'Starter', 'Premium
 const INTERESTING_URLS = ['pricing', 'billing', 'checkout', 'plan', 'subscription', 'upgrade', 'payment', 'cart'];
 const CURRENCY_SYMBOLS = ['$', '€', '£'];
 
-function scanPageForSubscription() {
+function scanPageForSubscription(force = false) {
     // 1. FAST CHECK: URL Heuristic
     const url = window.location.href.toLowerCase();
     const isInterestingUrl = INTERESTING_URLS.some(kw => url.includes(kw));
 
-    // 2. FAST CHECK: Document content preview
-    // If URL isn't interesting, check if page body *feels* like a pricing page before parsing everything.
-    // We check the first 2000 chars or look for rapid indicators.
-    // However, deep scans on every mutation are bad.
-
-    // If not an "interesting" URL, we still scan but with much stricter validtion or lower frequency?
-    // Actually, let's keep it simple: If URL is boring, bail out quickly unless manually triggered.
-    // Wait, some pricing pages are just root domains (e.g. tool.com). We can't strictly filter by URL.
-
-    // compromise: Only deep scan if we see at least one currency symbol in the visible text.
-    // But getting textContent is expensive.
-
-    // Let's rely on the mutation observer debounce to keep it cheap.
-    // We'll increase debounce to 2500ms (2.5s) to avoid churning on animations.
+    // STRICT GATE: If not interesting and not forced, bail out immediately.
+    // This saves massive performance on 99% of browsing.
+    if (!isInterestingUrl && !force) {
+        return;
+    }
 
     const textContent = document.body.innerText;
 
-    // Quick Bloom FIlter-ish:
+    // Quick Bloom Filter-ish (if we made it past the URL gate, or were forced):
     if (!CURRENCY_SYMBOLS.some(s => textContent.includes(s))) return;
 
     // ... rest of logic
@@ -121,7 +112,40 @@ function scanPageForSubscription() {
     }
 }
 
-// ... (retain listener)
+// ... (retain listener) replaced with actual listeners:
+
+import { PRICE_HIKE_HTML } from './alertTemplate.js';
+
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+    if (message.type === 'SHOW_NO_HIKE_ALERT') {
+        // Show "Price Safe" notification
+    }
+
+    if (message.type === 'SHOW_PRICE_HIKE_ALERT') {
+        const { lastPrice, currentPrice } = message.data;
+
+        // Check if already shown
+        if (document.getElementById('subdupes-hike-alert')) return;
+
+        const container = document.createElement('div');
+        container.innerHTML = PRICE_HIKE_HTML
+            .replace('__LAST_PRICE__', lastPrice)
+            .replace('__CURRENT_PRICE__', currentPrice);
+
+        document.body.appendChild(container);
+
+        // Bind close button
+        document.getElementById('sd-close').onclick = () => {
+            container.remove();
+        };
+    }
+
+    if (message.type === 'CMD_SCAN_PAGE') {
+        console.log('Manual scan triggered');
+        scanPageForSubscription(true); // FORCE SCAN
+        sendResponse({ success: true });
+    }
+});
 
 // Optional: Observe DOM mutations for dynamic SPAs
 let debounceTimer;
@@ -134,7 +158,7 @@ const observer = new MutationObserver((mutations) => {
     // Increased debounce to 2.5s to be un-intrusive
     clearTimeout(debounceTimer);
     debounceTimer = setTimeout(() => {
-        scanPageForSubscription();
+        scanPageForSubscription(false); // Passive scan
     }, 2500);
 });
 
@@ -142,3 +166,5 @@ const observer = new MutationObserver((mutations) => {
 // Actually 'childList' + 'subtree' is required for SPA changes.
 observer.observe(document.body, { childList: true, subtree: true });
 
+// Initial scan
+scanPageForSubscription(false);
