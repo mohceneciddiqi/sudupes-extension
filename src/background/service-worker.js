@@ -32,11 +32,13 @@ chrome.runtime.onStartup.addListener(syncSubscriptions);
 chrome.runtime.onInstalled.addListener(() => {
     syncSubscriptions();
 
-    // Create Context Menu
-    chrome.contextMenus.create({
-        id: 'save-to-subdupes',
-        title: 'Save to SubDupes',
-        contexts: ['selection']
+    // Create Context Menu (prevent duplicates)
+    chrome.contextMenus.removeAll(() => {
+        chrome.contextMenus.create({
+            id: 'save-to-subdupes',
+            title: 'Save to SubDupes',
+            contexts: ['selection']
+        });
     });
 });
 
@@ -94,13 +96,18 @@ async function checkUrlMatch(tabId, url) {
             if (!sub.websiteUrl) return false;
 
             try {
-                // Handle both full URLs (https://example.com) and bare hostnames (example.com)
-                const subHost = sub.websiteUrl.startsWith('http')
+                // Normalize cleaning
+                const subHost = (sub.websiteUrl.startsWith('http')
                     ? new URL(sub.websiteUrl).hostname
-                    : sub.websiteUrl;
+                    : sub.websiteUrl).toLowerCase().replace(/^www\./, '');
 
-                // Check if one contains the other (e.g. app.figma.com contains figma.com)
-                return currentHost.includes(subHost) || subHost.includes(currentHost);
+                const host = currentHost.toLowerCase().replace(/^www\./, '');
+
+                // Strict Match OR Subdomain Match (e.g. app.figma.com ends with figma.com)
+                // We add a dot to ensure we don't match "ample.com" with "example.com"
+                return host === subHost ||
+                    host.endsWith('.' + subHost) ||
+                    subHost.endsWith('.' + host);
             } catch (e) {
                 return false;
             }

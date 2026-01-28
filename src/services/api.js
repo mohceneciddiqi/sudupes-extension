@@ -5,22 +5,19 @@ const API_BASE = config.API_BASE;
 const getAuthToken = async () => {
     return new Promise((resolve) => {
         // Try getting cookie from frontend URL where it was set
+        // This is more reliable than credentials: 'include' for third-party contexts
         chrome.cookies.getAll({ url: config.COOKIE_URL }, (cookies) => {
-            console.log(`DEBUG: ALL cookies for ${config.COOKIE_URL}:`, cookies);
-
             const sessionCookie = cookies.find(c => c.name === 'session_token');
             if (sessionCookie) {
-                console.log('DEBUG: Found session_token:', sessionCookie);
                 resolve(sessionCookie.value);
             } else {
-                console.log('DEBUG: session_token MISSING. Available:', cookies.map(c => c.name));
                 resolve(null);
             }
         });
     });
 };
 
-export const api = {
+const api = {
     // Fetch user's active subscriptions
     getSubscriptions: async () => {
         try {
@@ -29,6 +26,7 @@ export const api = {
 
             const response = await fetch(`${API_BASE}/subscriptions`, {
                 method: 'GET',
+                // credentials: 'include', // Removed in favor of explicit Bearer
                 headers: {
                     'Content-Type': 'application/json',
                     'Authorization': `Bearer ${token}`
@@ -66,7 +64,7 @@ export const api = {
             if (!response.ok) {
                 const err = await response.json();
                 if (response.status === 401) {
-                    throw new Error('Please log in to SubDupes (localhost:5173) to sync.');
+                    throw new Error('Please log in.');
                 }
                 throw new Error(err.message || 'Failed to create subscription');
             }
@@ -87,6 +85,7 @@ export const api = {
 
             const response = await fetch(`${API_BASE}/auth/me`, {
                 headers: {
+                    'Content-Type': 'application/json',
                     'Authorization': `Bearer ${token}`
                 }
             });
@@ -108,6 +107,7 @@ export const api = {
 
             const response = await fetch(`${API_BASE}/auth/me`, {
                 headers: {
+                    'Content-Type': 'application/json',
                     'Authorization': `Bearer ${token}`
                 }
             });
@@ -120,3 +120,5 @@ export const api = {
         }
     }
 };
+
+export { api };

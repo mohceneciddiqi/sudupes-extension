@@ -1,4 +1,10 @@
 export const PRICE_HIKE_HTML = `
+<style>
+  @keyframes slideIn {
+    from { opacity: 0; transform: translateX(20px); }
+    to { opacity: 1; transform: translateX(0); }
+  }
+</style>
 <div id="subdupes-hike-alert" style="
   position: fixed;
   top: 20px;

@@ -32,15 +32,36 @@ const AddSubscriptionForm = () => {
             const calculateNextDate = (cycle) => {
                 const now = new Date();
                 const next = new Date(now);
-                if (cycle === 'WEEKLY') next.setDate(now.getDate() + 7);
-                else if (cycle === 'YEARLY') next.setFullYear(now.getFullYear() + 1);
-                else next.setDate(now.getDate() + 30); // Default Monthly
+                if (cycle === 'WEEKLY') {
+                    next.setDate(now.getDate() + 7);
+                } else if (cycle === 'YEARLY') {
+                    next.setFullYear(now.getFullYear() + 1);
+                } else {
+                    // Smart Month Increment: Handle end-of-month (e.g., Jan 31 -> Feb 28/29)
+                    const d = next.getDate();
+                    next.setMonth(next.getMonth() + 1);
+                    if (next.getDate() !== d) {
+                        next.setDate(0); // Set to last day of previous month
+                    }
+                }
                 return next.toISOString();
             };
 
-            const nextBillingDate = formData.trialEndDate
-                ? new Date(formData.trialEndDate).toISOString()
-                : calculateNextDate(formData.billingCycle);
+            let nextBillingDate;
+            if (formData.trialEndDate) {
+                const trialDate = new Date(formData.trialEndDate);
+                if (isNaN(trialDate.getTime())) {
+                    // Fallback or Alert
+                    // Since there is no input to fix it, we ignore the invalid trial date
+                    // and calculate based on cycle, but warn the user.
+                    console.warn("Invalid trialEndDate in draft, ignoring.");
+                    nextBillingDate = calculateNextDate(formData.billingCycle);
+                } else {
+                    nextBillingDate = trialDate.toISOString();
+                }
+            } else {
+                nextBillingDate = calculateNextDate(formData.billingCycle);
+            }
 
             const parsedAmount = parseFloat(formData.amount);
             if (isNaN(parsedAmount)) {
@@ -65,19 +86,34 @@ const AddSubscriptionForm = () => {
         }
     }
 
+    const handleDiscard = async () => {
+        clearDraft();
+        setView('dashboard');
+
+        // Clear badge on current tab
+        if (typeof chrome !== 'undefined' && chrome.tabs && chrome.action) {
+            const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+            if (tab) {
+                chrome.action.setBadgeText({ text: '', tabId: tab.id });
+            }
+        }
+    };
+
     return (
         <div className="bg-white rounded-lg p-4 shadow-sm border border-gray-100">
             <div className="flex items-center justify-between mb-4">
                 <h2 className="text-lg font-semibold text-gray-800">New Subscription</h2>
                 <button
-                    onClick={() => setView('dashboard')}
+                    onClick={handleDiscard}
                     className="text-gray-400 hover:text-gray-600"
+                    title="Dismiss Draft"
                 >
                     ✕
                 </button>
             </div>
 
             <form onSubmit={handleSubmit} className="space-y-3">
+                {/* ... fields ... */}
                 <div>
                     <label className="block text-xs font-medium text-gray-500 mb-1">Service Name</label>
                     <input
@@ -146,12 +182,21 @@ const AddSubscriptionForm = () => {
                     />
                 </div>
 
-                <button
-                    type="submit"
-                    className="w-full bg-blue-600 hover:bg-blue-700 text-white font-medium py-2 px-4 rounded-lg text-sm transition-colors mt-2"
-                >
-                    Save Subscription
-                </button>
+                <div className="flex gap-2 mt-2 pt-2">
+                    <button
+                        type="button"
+                        onClick={handleDiscard}
+                        className="flex-1 bg-gray-100 hover:bg-gray-200 text-gray-600 font-medium py-2 px-4 rounded-lg text-sm transition-colors"
+                    >
+                        Discard
+                    </button>
+                    <button
+                        type="submit"
+                        className="flex-1 bg-blue-600 hover:bg-blue-700 text-white font-medium py-2 px-4 rounded-lg text-sm transition-colors"
+                    >
+                        Save
+                    </button>
+                </div>
             </form>
         </div>
     )

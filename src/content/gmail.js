@@ -5,70 +5,114 @@ console.log('SubDupes Gmail Module Loaded');
 const COMPOSE_SELECTOR = 'div[role="dialog"][aria-label^="Compose"]'; // Compose window
 const TOOLBAR_SELECTOR = 'tr.btC'; // Bottom toolbar row in compose
 const BCC_INPUT_SELECTOR = 'input[name="bcc"]'; // Hidden BCC input often used by other extensions
-const BCC_LINK_SELECTOR = 'span[role="link"][aria-label="Add Bcc"]'; // "Bcc" toggle link
+const findBccToggle = (composeWindow) => {
+    // 1. Try standard aria-label (English)
+    let toggle = composeWindow.querySelector('span[role="link"][aria-label="Add Bcc"]');
+    if (toggle) return toggle;
 
-let userBccAlias = null;
-
-// Ask background for user alias
-chrome.runtime.sendMessage({ type: 'GET_USER_BCC' }, (response) => {
-    if (response && response.bccEmail) {
-        userBccAlias = response.bccEmail;
-        console.log('SubDupes: BCC Alias loaded');
+    // 2. Try known variations (French, Spanish, etc - example list)
+    const knownLabels = ["Add Bcc", "Ajouter Cci", "Añadir CCO", "Bcc", "Cci", "CCO"];
+    // Structural search: Find all link spans in the header area
+    // Usually the header is a table or div structure. We search within the top container.
+    const potentialLinks = composeWindow.querySelectorAll('span[role="link"]');
+    for (let link of potentialLinks) {
+        if (knownLabels.includes(link.innerText) || knownLabels.includes(link.ariaLabel)) {
+            return link;
+        }
     }
-});
 
-function injectBccButton(composeWindow) {
-    if (composeWindow.dataset.sdInjected) return;
-
-    const toolbar = composeWindow.querySelector(TOOLBAR_SELECTOR);
-    if (!toolbar) return;
-
-    const btnRow = toolbar.querySelector('td:nth-child(1) > div'); // Send button container
-    if (!btnRow) return;
-
-    const button = document.createElement('div');
-    button.className = 'sd-gmail-btn';
-    button.innerHTML = `
-    <div style="cursor: pointer; margin-left: 8px; display: inline-flex; align-items: center; background: #EEF2FF; color: #4F46E5; padding: 4px 8px; border-radius: 4px; font-size: 13px; font-weight: 500;" title="Copy SubDupes Tracking Address">
-      <span style="margin-right: 4px;">📋</span> Copy BCC
-    </div>
-  `;
-
-    button.onclick = () => {
-        addBccToFields(composeWindow);
-    };
-
-    // Insert after send button group
-    btnRow.appendChild(button);
-    composeWindow.dataset.sdInjected = 'true';
-}
+    return null;
+};
 
 function addBccToFields(composeWindow) {
+    // Helper to perform the copy action
+    const performCopy = (alias) => {
+        const showSuccess = () => {
+            const btn = composeWindow.querySelector('.sd-gmail-btn div');
+            if (btn) {
+                const originalText = btn.innerHTML;
+                btn.innerText = 'Copied! Paste in BCC';
+                btn.style.background = '#D1FAE5';
+                btn.style.color = '#065F46';
+
+                // Try to open BCC field if possible
+                const bccLink = findBccToggle(composeWindow) || document.querySelector('span[role="link"][aria-label="Add Bcc"]');
+                if (bccLink && bccLink.offsetParent !== null) {
+                    bccLink.click();
+                }
+
+                setTimeout(() => {
+                    btn.innerHTML = originalText;
+                    btn.style.background = '#EEF2FF';
+                    btn.style.color = '#4F46E5';
+                }, 3000);
+            }
+        };
+
+        const showError = (err) => {
+            console.error('SubDupes Copy Failed:', err);
+            const btn = composeWindow.querySelector('.sd-gmail-btn div');
+            if (btn) {
+                btn.innerText = 'Copy Failed ❌';
+                btn.style.background = '#FEE2E2';
+                btn.style.color = '#B91C1C';
+                alert(`Could not copy BCC address. Access denied or clipboard error.\n\nYour Alias: ${alias}`);
+            }
+        };
+
+        // Attempt 1: Modern Clipboard API
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(alias)
+                .then(showSuccess)
+                .catch(err => {
+                    // Fallback if permission denied
+                    fallbackCopy(alias, showSuccess, showError);
+                });
+        } else {
+            // Fallback for older contexts
+            fallbackCopy(alias, showSuccess, showError);
+        }
+    };
+
+    // Helper: Legacy execCommand fallback
+    const fallbackCopy = (text, onSuccess, onError) => {
+        try {
+            const textArea = document.createElement("textarea");
+            textArea.value = text;
+
+            // Ensure invisible but part of DOM
+            textArea.style.position = "fixed";
+            textArea.style.left = "-9999px";
+            textArea.style.top = "0";
+            document.body.appendChild(textArea);
+
+            textArea.focus();
+            textArea.select();
+
+            const successful = document.execCommand('copy');
+            document.body.removeChild(textArea);
+
+            if (successful) onSuccess();
+            else onError(new Error('execCommand returned false'));
+        } catch (err) {
+            onError(err);
+        }
+    };
+
     if (!userBccAlias) {
-        alert('Please log in to SubDupes extension first to sync your BCC alias.');
+        // Try to fetch manually (user might have just logged in)
+        chrome.runtime.sendMessage({ type: 'GET_USER_BCC' }, (response) => {
+            if (response && response.bccEmail) {
+                userBccAlias = response.bccEmail;
+                performCopy(userBccAlias);
+            } else {
+                alert('Please log in to SubDupes extension first to sync your BCC alias.');
+            }
+        });
         return;
     }
 
-    navigator.clipboard.writeText(userBccAlias).then(() => {
-        const btn = composeWindow.querySelector('.sd-gmail-btn div');
-        const originalText = btn.innerHTML;
-
-        btn.innerText = 'Copied! Paste in BCC';
-        btn.style.background = '#D1FAE5';
-        btn.style.color = '#065F46';
-
-        // Try to open BCC field if possible (best effort)
-        const bccLink = composeWindow.querySelector(BCC_LINK_SELECTOR) || document.querySelector(BCC_LINK_SELECTOR);
-        if (bccLink && bccLink.offsetParent !== null) {
-            bccLink.click();
-        }
-
-        setTimeout(() => {
-            btn.innerHTML = originalText;
-            btn.style.background = '#EEF2FF';
-            btn.style.color = '#4F46E5';
-        }, 3000);
-    });
+    performCopy(userBccAlias);
 }
 
 // Observer for new compose windows
