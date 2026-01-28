@@ -23,12 +23,13 @@ async function syncSubscriptions() {
 
         console.log('Synced:', { subs: subs.length, user: profile?.email });
     } catch (err) {
-        console.warn('Sync failed (likely not logged in):', err.message);
+        console.warn('Sync failed (likely not logged in):', err?.message || err);
     }
 }
 
 // Initial sync
 chrome.runtime.onStartup.addListener(syncSubscriptions);
+
 chrome.runtime.onInstalled.addListener(() => {
     syncSubscriptions();
 
@@ -40,40 +41,46 @@ chrome.runtime.onInstalled.addListener(() => {
             contexts: ['selection']
         });
     });
+
+    // Ensure alarm exists (onInstalled is a good place for this)
+    chrome.alarms.create('dailySync', { periodInMinutes: 1440 });
 });
 
-chrome.alarms.create('dailySync', { periodInMinutes: 1440 });
-
-// Handle Context Menu Click
-chrome.contextMenus.onClicked.addListener((info, tab) => {
-    if (info.menuItemId === 'save-to-subdupes') {
-        const draft = {
-            name: tab.title.split(/[-|]/)[0].trim(), // Simple heuristic
-            notes: info.selectionText,
-            websiteUrl: tab.url,
-            source: 'CONTEXT_MENU'
-        };
-
-        // Save to storage and open popup (requiring user action usually, asking to open side panel or just badge)
-        chrome.storage.local.set({ detectedDraft: draft }, () => {
-            // Notify user visually
-            chrome.scripting.executeScript({
-                target: { tabId: tab.id },
-                func: () => alert('Selection saved to SubDupes draft! Open extension to review.')
-            });
-            // Set badge
-            chrome.action.setBadgeText({ text: '!', tabId: tab.id });
-        });
-    }
-});
+// If you also want it recreated when SW wakes without install, keep it here too,
+// but it is not required.
+// chrome.alarms.create('dailySync', { periodInMinutes: 1440 });
 
 chrome.alarms.onAlarm.addListener((alarm) => {
     if (alarm.name === 'dailySync') syncSubscriptions();
 });
 
+// Handle Context Menu Click
+chrome.contextMenus.onClicked.addListener((info, tab) => {
+    if (info.menuItemId !== 'save-to-subdupes') return;
+    if (!tab?.id) return;
+
+    const draft = {
+        name: (tab.title || '').split(/[-|]/)[0].trim(),
+        notes: info.selectionText,
+        websiteUrl: tab.url,
+        source: 'CONTEXT_MENU'
+    };
+
+    chrome.storage.local.set({ detectedDraft: draft }, () => {
+        // Notify user visually
+        chrome.scripting.executeScript({
+            target: { tabId: tab.id },
+            func: () => alert('Selection saved to SubDupes draft! Open extension to review.')
+        });
+
+        // Set badge
+        chrome.action.setBadgeText({ text: '!', tabId: tab.id });
+    });
+});
+
 // URL Watcher for Price Hike / Already Subscribed Check
 chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
-    if (changeInfo.status === 'complete' && tab.url) {
+    if (changeInfo.status === 'complete' && tab?.url) {
         checkUrlMatch(tabId, tab.url);
     }
 });
@@ -82,9 +89,7 @@ async function checkUrlMatch(tabId, url) {
     // Hydrate if empty (Service Worker woke up)
     if (!subscriptionCache.length) {
         const result = await chrome.storage.local.get(['subscriptions']);
-        if (result.subscriptions) {
-            subscriptionCache = result.subscriptions;
-        }
+        if (result.subscriptions) subscriptionCache = result.subscriptions;
     }
 
     if (!subscriptionCache.length) return;
@@ -92,25 +97,20 @@ async function checkUrlMatch(tabId, url) {
     try {
         const currentHost = new URL(url).hostname;
 
-        const match = subscriptionCache.find(sub => {
+        const match = subscriptionCache.find((sub) => {
             if (!sub.websiteUrl) return false;
 
             try {
-                // Robust Normalization: Handle "figma.com/pricing", "http://figma.com", etc.
+                // Robust normalization: Handle "figma.com/pricing", "http://figma.com", etc.
                 let normalizedUrl = sub.websiteUrl;
-                if (!normalizedUrl.startsWith('http')) {
-                    normalizedUrl = 'https://' + normalizedUrl;
-                }
+                if (!normalizedUrl.startsWith('http')) normalizedUrl = 'https://' + normalizedUrl;
 
                 const subHost = new URL(normalizedUrl).hostname.toLowerCase().replace(/^www\./, '');
                 const host = currentHost.toLowerCase().replace(/^www\./, '');
 
-                // Strict Match OR Subdomain Match (e.g. app.figma.com ends with figma.com)
-                return host === subHost ||
-                    host.endsWith('.' + subHost) ||
-                    subHost.endsWith('.' + host);
-            } catch (e) {
-                // Return false if URL parsing fails (e.g. "Simons Sub" is not a URL)
+                // Strict match OR subdomain match
+                return host === subHost || host.endsWith('.' + subHost) || subHost.endsWith('.' + host);
+            } catch {
                 return false;
             }
         });
@@ -118,44 +118,43 @@ async function checkUrlMatch(tabId, url) {
         if (match) {
             console.log('URL Match found:', match.name);
 
-            // Inject "Insight UI" or set badge
             chrome.action.setBadgeText({ text: '✔', tabId });
-            chrome.action.setBadgeBackgroundColor({ color: '#10B981', tabId }); // Green for "You have this"
+            chrome.action.setBadgeBackgroundColor({ color: '#10B981', tabId });
         } else {
             // Clear badge if no match (fix for persistent badge on navigation)
             chrome.action.setBadgeText({ text: '', tabId });
         }
-    } catch (e) {
+    } catch {
         // Invalid URL
     }
+}
 
-    chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-        if (message.type === 'GET_USER_BCC') {
-            // Retrieve from storage or api
-            chrome.storage.local.get(['userProfile'], (result) => {
-                sendResponse({ bccEmail: result.userProfile?.bccEmail });
-            });
-            return true; // Async response
-        }
+// IMPORTANT: Message listener must be registered once at top level
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+    if (message?.type === 'GET_USER_BCC') {
+        chrome.storage.local.get(['userProfile'], (result) => {
+            sendResponse({ bccEmail: result.userProfile?.bccEmail });
+        });
+        return true; // async response
+    }
 
-        if (message.type === 'SUBSCRIPTION_DETECTED') {
-            console.log('Background received subscription:', message.data);
+    if (message?.type === 'SUBSCRIPTION_DETECTED') {
+        console.log('Background received subscription:', message.data);
 
-            // Save to local storage so popup can pick it up
-            chrome.storage.local.set({ detectedDraft: message.data }, () => {
-                console.log('Draft saved to storage');
+        chrome.storage.local.set({ detectedDraft: message.data }, () => {
+            console.log('Draft saved to storage');
 
-                // Optional: Set badge to indicate something was found
-                if (sender.tab) {
-                    chrome.action.setBadgeText({ text: '!', tabId: sender.tab.id });
-                    chrome.action.setBadgeBackgroundColor({ color: '#2563EB', tabId: sender.tab.id });
-                }
-            });
-        }
+            if (sender?.tab?.id) {
+                chrome.action.setBadgeText({ text: '!', tabId: sender.tab.id });
+                chrome.action.setBadgeBackgroundColor({ color: '#2563EB', tabId: sender.tab.id });
+            }
+        });
 
-        if (message.type === 'CMD_SYNC_NOW' || message.type === 'CMD_SYNC_ON_CONNECT') {
-            syncSubscriptions().then(() => {
-                console.log('Sync complete');
-            });
-        }
-    });
+        return; // no sendResponse needed
+    }
+
+    if (message?.type === 'CMD_SYNC_NOW' || message?.type === 'CMD_SYNC_ON_CONNECT') {
+        syncSubscriptions().then(() => console.log('Sync complete'));
+        return;
+    }
+});
