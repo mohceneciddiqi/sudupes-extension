@@ -3,7 +3,7 @@
 
 console.log('Use SubDupes Observer Loaded');
 
-const PRICING_REGEX = /[\$€£]\s?\d+(?:[\.,]\d{2})?\s?(?:\/|per|mo|month|yr|year|annually)/i;
+const PRICING_REGEX = /[\$€£]\s?\d+(?:[\.,]\d{2})?\s?(?:\/|per|mo|month|yr|year|annually|wk|week|weekly)/i;
 const PLAN_KEYWORDS = ['Free', 'Pro', 'Basic', 'Enterprise', 'Starter', 'Premium', 'Team'];
 
 // Optimization: Only scan interesting pages
@@ -62,7 +62,7 @@ function scanPageForSubscription(force = false) {
     // Expanded and lowercased keywords for better matching
     const PRIORITY_KEYWORDS = [
         'total', 'subtotal', 'due', 'amount', 'pay', 'charge', 'price', 'plan', 'bill',
-        '/mo', '/yr', 'per month', 'annually', 'subscription'
+        '/mo', '/yr', '/wk', 'per month', 'annually', 'weekly', 'subscription'
     ];
 
     const priorityLine = lines.find(line => {
@@ -263,12 +263,22 @@ const observer = new MutationObserver((mutations) => {
 });
 
 // Optimization: Observe body but ignore attributes/characterData to save processing
-observer.observe(document.body, {
-    childList: true,
-    subtree: true,
-    attributes: false,
-    characterData: false
-});
+// Optimization: Observe body but ignore attributes/characterData to save processing
+const isInterestingPage = () => {
+    const url = window.location.href.toLowerCase();
+    return INTERESTING_URLS.some(kw => url.includes(kw));
+};
 
-// Initial scan
-scanPageForSubscription(false);
+if (isInterestingPage()) {
+    console.log('SubDupes: Pricing page detected, attaching observer.');
+    observer.observe(document.body, {
+        childList: true,
+        subtree: true,
+        attributes: false,
+        characterData: false
+    });
+    // Initial scan
+    scanPageForSubscription(false);
+} else {
+    console.log('SubDupes: Not a pricing page, observer dormant.');
+}

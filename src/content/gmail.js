@@ -1,10 +1,94 @@
 // Gmail Integration for SubDupes
 console.log('SubDupes Gmail Module Loaded');
 
-// Selectors for Gmail (These are heuristic and may change, hence relying on aria-labels where possible)
-const COMPOSE_SELECTOR = 'div[role="dialog"][aria-label^="Compose"]'; // Compose window
-const TOOLBAR_SELECTOR = 'tr.btC'; // Bottom toolbar row in compose
-const BCC_INPUT_SELECTOR = 'input[name="bcc"]'; // Hidden BCC input often used by other extensions
+// 1. Structural Selector: Dialog containing stable Gmail fields
+const isComposeWindow = (node) => {
+    if (!node || node.nodeType !== 1) return false;
+
+    // Primary check: role="dialog"
+    if (node.getAttribute('role') !== 'dialog') return false;
+
+    // Secondary check: Contains Subject field or Message Body AND some generic button (toolbar loaded)
+    const hasSubject = node.querySelector('input[name="subjectbox"]');
+    const hasBody = node.querySelector('div[contenteditable="true"][role="textbox"]');
+    const hasButton = node.querySelector('[role="button"]'); // Ensures toolbar/actions are rendering
+
+    return !!((hasSubject || hasBody) && hasButton);
+};
+
+let userBccAlias = null;
+
+// Fetch alias on load
+chrome.runtime.sendMessage({ type: 'GET_USER_BCC' }, (response) => {
+    if (response?.bccEmail) {
+        userBccAlias = response.bccEmail;
+        console.log('SubDupes: Alias loaded', userBccAlias);
+    }
+});
+
+const injectBccButton = (composeWindow) => {
+    // Avoid double injection using unique marker class
+    if (composeWindow.querySelector('.sd-gmail-btn')) return;
+
+    // Strategy: robust relative injection
+    // Find the bottom toolbar container
+    const bottomBar = composeWindow.querySelector('.btC') ||
+        composeWindow.querySelector('tr.btC') ||
+        composeWindow.querySelector('div[role="toolbar"]')?.parentElement;
+
+    if (!bottomBar) return;
+
+    // Create button container (ALWAYS DIV, never TD to avoid breaking table structure)
+    const btnContainer = document.createElement('div');
+    btnContainer.className = 'sd-gmail-btn';
+    btnContainer.style.padding = '0 4px';
+    btnContainer.style.display = 'inline-flex'; // Safe for both flex and block contexts
+    btnContainer.style.verticalAlign = 'middle';
+    btnContainer.style.alignItems = 'center';
+
+    // Create button
+    const btn = document.createElement('div');
+    btn.innerText = 'Copy BCC';
+    btn.style.cursor = 'pointer';
+    btn.style.background = '#EEF2FF';
+    btn.style.color = '#4F46E5';
+    btn.style.fontSize = '12px';
+    btn.style.fontWeight = '600';
+    btn.style.padding = '4px 8px';
+    btn.style.borderRadius = '6px';
+    btn.style.display = 'flex';
+    btn.style.alignItems = 'center';
+    btn.style.gap = '4px';
+    btn.title = 'Copy SubDupes Tracking Alias';
+
+    btn.onclick = (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        addBccToFields(composeWindow);
+    };
+
+    btnContainer.appendChild(btn);
+
+    // Injection Placement
+    if (bottomBar.tagName === 'TR') {
+        // Legacy Table Layout: Inject into the first TD (Action Cell)
+        // Do NOT append a new TD. Append DIV inside existing TD.
+        const firstCell = bottomBar.querySelector('td');
+        if (firstCell) {
+            firstCell.appendChild(btnContainer);
+        }
+    } else {
+        // Modern Flex Layout: Inject after the first child (usually Send group)
+        if (bottomBar.firstChild) {
+            bottomBar.insertBefore(btnContainer, bottomBar.firstChild.nextSibling);
+        } else {
+            bottomBar.appendChild(btnContainer);
+        }
+    }
+};
+
+// ... (findBccToggle and addBccToFields remain same) ...
+
 const findBccToggle = (composeWindow) => {
     // 1. Try standard aria-label (English)
     let toggle = composeWindow.querySelector('span[role="link"][aria-label="Add Bcc"]');
@@ -12,20 +96,17 @@ const findBccToggle = (composeWindow) => {
 
     // 2. Try known variations (French, Spanish, etc - example list)
     const knownLabels = ["Add Bcc", "Ajouter Cci", "Añadir CCO", "Bcc", "Cci", "CCO"];
-    // Structural search: Find all link spans in the header area
-    // Usually the header is a table or div structure. We search within the top container.
     const potentialLinks = composeWindow.querySelectorAll('span[role="link"]');
     for (let link of potentialLinks) {
         if (knownLabels.includes(link.innerText) || knownLabels.includes(link.ariaLabel)) {
             return link;
         }
     }
-
     return null;
 };
 
+// ... (addBccToFields implementation from line 79 to 168) ...
 function addBccToFields(composeWindow) {
-    // Helper to perform the copy action
     const performCopy = (alias) => {
         const showSuccess = () => {
             const btn = composeWindow.querySelector('.sd-gmail-btn div');
@@ -35,8 +116,8 @@ function addBccToFields(composeWindow) {
                 btn.style.background = '#D1FAE5';
                 btn.style.color = '#065F46';
 
-                // Try to open BCC field if possible
-                const bccLink = findBccToggle(composeWindow) || document.querySelector('span[role="link"][aria-label="Add Bcc"]');
+                // Try to open BCC field
+                const bccLink = findBccToggle(composeWindow);
                 if (bccLink && bccLink.offsetParent !== null) {
                     bccLink.click();
                 }
@@ -56,77 +137,63 @@ function addBccToFields(composeWindow) {
                 btn.innerText = 'Copy Failed ❌';
                 btn.style.background = '#FEE2E2';
                 btn.style.color = '#B91C1C';
-                alert(`Could not copy BCC address. Access denied or clipboard error.\n\nYour Alias: ${alias}`);
+                alert(`Could not copy BCC address.\n\nYour Alias: ${alias}`);
             }
         };
 
-        // Attempt 1: Modern Clipboard API
         if (navigator.clipboard && navigator.clipboard.writeText) {
-            navigator.clipboard.writeText(alias)
-                .then(showSuccess)
-                .catch(err => {
-                    // Fallback if permission denied
-                    fallbackCopy(alias, showSuccess, showError);
-                });
+            navigator.clipboard.writeText(alias).then(showSuccess).catch(() => fallbackCopy(alias, showSuccess, showError));
         } else {
-            // Fallback for older contexts
             fallbackCopy(alias, showSuccess, showError);
         }
     };
 
-    // Helper: Legacy execCommand fallback
     const fallbackCopy = (text, onSuccess, onError) => {
         try {
             const textArea = document.createElement("textarea");
             textArea.value = text;
-
-            // Ensure invisible but part of DOM
             textArea.style.position = "fixed";
             textArea.style.left = "-9999px";
-            textArea.style.top = "0";
             document.body.appendChild(textArea);
-
             textArea.focus();
             textArea.select();
-
             const successful = document.execCommand('copy');
             document.body.removeChild(textArea);
-
             if (successful) onSuccess();
-            else onError(new Error('execCommand returned false'));
+            else onError(new Error('execCommand fail'));
         } catch (err) {
             onError(err);
         }
     };
 
     if (!userBccAlias) {
-        // Try to fetch manually (user might have just logged in)
         chrome.runtime.sendMessage({ type: 'GET_USER_BCC' }, (response) => {
             if (response && response.bccEmail) {
                 userBccAlias = response.bccEmail;
                 performCopy(userBccAlias);
             } else {
-                alert('Please log in to SubDupes extension first to sync your BCC alias.');
+                alert('Please log in to SubDupes extension first.');
             }
         });
         return;
     }
-
     performCopy(userBccAlias);
 }
+
 
 // Observer for new compose windows
 const observer = new MutationObserver((mutations) => {
     for (const mutation of mutations) {
         for (const node of mutation.addedNodes) {
-            if (node.nodeType === 1) {
-                // Check if node is compose window or contains it
-                if (node.matches && node.matches(COMPOSE_SELECTOR)) {
-                    injectBccButton(node);
-                } else if (node.querySelectorAll) {
-                    const composes = node.querySelectorAll(COMPOSE_SELECTOR);
-                    composes.forEach(injectBccButton);
-                }
+            if (isComposeWindow(node)) {
+                injectBccButton(node);
+            } else if (node.nodeType === 1 && node.querySelectorAll) {
+                // Determine if any children are valid compose windows (e.g. if a container was added)
+                // We search for the toolbar class within dialogs because selectors are cheaper than full checks
+                const dialogs = node.querySelectorAll('div[role="dialog"]');
+                dialogs.forEach(dialog => {
+                    if (isComposeWindow(dialog)) injectBccButton(dialog);
+                });
             }
         }
     }

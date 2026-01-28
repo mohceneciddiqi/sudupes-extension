@@ -1,4 +1,4 @@
-import { config } from '../config';
+import { config } from '../config.js';
 
 const API_BASE = config.API_BASE;
 

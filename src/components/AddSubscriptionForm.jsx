@@ -28,6 +28,12 @@ const AddSubscriptionForm = () => {
         e.preventDefault()
 
         try {
+            // URL Normalization
+            let cleanUrl = formData.websiteUrl.trim();
+            if (cleanUrl && !cleanUrl.startsWith('http')) {
+                cleanUrl = 'https://' + cleanUrl;
+            }
+
             // Better Date Logic
             const calculateNextDate = (cycle) => {
                 const now = new Date();
@@ -44,6 +50,8 @@ const AddSubscriptionForm = () => {
                         next.setDate(0); // Set to last day of previous month
                     }
                 }
+                // Set to Noon to avoid timezone flipping (off-by-one errors)
+                next.setHours(12, 0, 0, 0);
                 return next.toISOString();
             };
 
@@ -89,14 +97,6 @@ const AddSubscriptionForm = () => {
     const handleDiscard = async () => {
         clearDraft();
         setView('dashboard');
-
-        // Clear badge on current tab
-        if (typeof chrome !== 'undefined' && chrome.tabs && chrome.action) {
-            const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-            if (tab) {
-                chrome.action.setBadgeText({ text: '', tabId: tab.id });
-            }
-        }
     };
 
     return (
@@ -171,6 +171,17 @@ const AddSubscriptionForm = () => {
                 </div>
 
                 <div>
+                    <label className="block text-xs font-medium text-gray-500 mb-1">Trial End Date (Optional)</label>
+                    <input
+                        type="date"
+                        name="trialEndDate"
+                        value={formData.trialEndDate || ''}
+                        onChange={handleChange}
+                        className="w-full text-sm border-gray-300 rounded-md focus:ring-blue-500 focus:border-blue-500 p-2 border"
+                    />
+                </div>
+
+                <div>
                     <label className="block text-xs font-medium text-gray-500 mb-1">Website (Optional)</label>
                     <input
                         type="url"
@@ -192,7 +203,8 @@ const AddSubscriptionForm = () => {
                     </button>
                     <button
                         type="submit"
-                        className="flex-1 bg-blue-600 hover:bg-blue-700 text-white font-medium py-2 px-4 rounded-lg text-sm transition-colors"
+                        disabled={!formData.amount || isNaN(parseFloat(formData.amount))}
+                        className="flex-1 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-300 disabled:cursor-not-allowed text-white font-medium py-2 px-4 rounded-lg text-sm transition-colors"
                     >
                         Save
                     </button>

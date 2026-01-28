@@ -1,4 +1,5 @@
 import { create } from 'zustand'
+import { VIEWS } from '../constants'
 
 const useStore = create((set) => ({
     user: null,
@@ -11,12 +12,21 @@ const useStore = create((set) => ({
     })),
     clearDraft: () => {
         set({ draft: null });
-        if (typeof chrome !== 'undefined' && chrome.storage) {
-            chrome.storage.local.remove('detectedDraft');
+        if (typeof chrome !== 'undefined' && chrome.tabs) {
+            // clear badge on active tab
+            chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+                if (tabs[0]) {
+                    // Send signal to background to clear storage AND badge
+                    chrome.runtime.sendMessage({ type: 'CMD_DRAFT_CONSUMED', tabId: tabs[0].id });
+                } else {
+                    // If no active tab (unlikely in popup), just clear storage
+                    chrome.runtime.sendMessage({ type: 'CMD_DRAFT_CONSUMED' });
+                }
+            });
         }
     },
 
-    view: 'auth', // 'auth' | 'dashboard' | 'add-draft'
+    view: VIEWS.AUTH,
     setView: (view) => set({ view }),
 
     // Hydrate from chrome.storage
@@ -28,7 +38,7 @@ const useStore = create((set) => ({
                         set({ subscriptions: result.subscriptions });
                     }
                     if (result.detectedDraft) {
-                        set({ draft: result.detectedDraft, view: 'add-draft' })
+                        set({ draft: result.detectedDraft, view: VIEWS.ADD_DRAFT })
                         resolve(true);
                     } else {
                         resolve(false);

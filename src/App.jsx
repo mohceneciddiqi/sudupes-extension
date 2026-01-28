@@ -5,11 +5,17 @@ import SubscriptionList from './components/SubscriptionList'
 import { api } from './services/api'
 import { config } from './config'
 
+import { VIEWS } from './constants'
+
 function App() {
   const { view, setView, checkStorage, setUser, user } = useStore()
   const [init, setInit] = useState(false)
 
   const handleSync = async () => {
+    // 1. Force Backend Sync
+    chrome.runtime.sendMessage({ type: 'CMD_SYNC_NOW' });
+
+    // 2. Rescan Current Page
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
     if (tab?.id) {
       try {
@@ -28,38 +34,48 @@ function App() {
         setUser(currentUser);
         const hasDraft = await checkStorage();
         if (!hasDraft) {
-          setView('dashboard');
+          setView(VIEWS.DASHBOARD);
         }
       } else {
-        setView('auth');
+        setView(VIEWS.AUTH);
       }
       setInit(true);
-
       // Trigger scan once on load
       handleSync();
       // Trigger background sync to ensure cache is fresh
       chrome.runtime.sendMessage({ type: 'CMD_SYNC_ON_CONNECT' });
     };
     initApp();
-  }, []); // Empty dependency array = run once on mount
+  }, []);
 
   // Storage Listener
   useEffect(() => {
     const handleStorageChange = (changes, area) => {
-      // Only update if we have a user (meaning we are in dashboard mode)
-      if (area === 'local' && changes.detectedDraft && user) {
-        checkStorage();
+      // Check current user state directly to ensure fresh value without re-binding listener
+      const currentUser = useStore.getState().user;
+
+      // Only update if we have a user (meaning we are in dashboard/authorized mode)
+      if (area === 'local' && currentUser) {
+        if (changes.detectedDraft) {
+          checkStorage();
+        }
+        if (changes.subscriptions) {
+          // Instant update of subscription list
+          useStore.getState().setSubscriptions(changes.subscriptions.newValue || []);
+        }
       }
     };
     chrome.storage.onChanged.addListener(handleStorageChange);
     return () => chrome.storage.onChanged.removeListener(handleStorageChange);
-  }, [user]); // Re-bind if user state changes (e.g. login/logout)
+  }, []); // Run once on mount
 
   if (!init) return <div className="flex items-center justify-center h-full">Loading...</div>
 
-  if (view === 'auth') {
+  if (view === VIEWS.AUTH) {
     return (
+      // ... auth UI
       <div className="flex flex-col items-center justify-center h-full p-6 bg-white text-center">
+        {/* ... svg and text ... */}
         <div className="w-12 h-12 bg-blue-100 rounded-full flex items-center justify-center mb-4">
           <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6 text-blue-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 16l-4-4m0 0l4-4m-4 4h14m-5 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h7a3 3 0 013 3v1" />
@@ -86,7 +102,7 @@ function App() {
 
   return (
     <div className="w-full h-full bg-gray-50 flex flex-col">
-      {/* Header */}
+      {/* ... header ... */}
       <header className="bg-white border-b border-gray-200 px-4 py-3 flex items-center justify-between shadow-sm sticky top-0 z-10">
         <div className="flex items-center gap-2">
           <div className="w-6 h-6 bg-blue-600 rounded-md flex items-center justify-center text-white font-bold text-xs">
@@ -115,7 +131,7 @@ function App() {
 
       {/* Main Content */}
       <main className="flex-1 p-4 overflow-y-auto">
-        {view === 'dashboard' && (
+        {view === VIEWS.DASHBOARD && (
           <>
             <div className="bg-white rounded-lg shadow-sm border border-gray-100 p-4 mb-4">
               <h2 className="text-sm font-medium text-gray-500 mb-1">Active Tabs</h2>
@@ -124,13 +140,13 @@ function App() {
 
             <div className="space-y-2">
               <button
-                onClick={() => setView('add-draft')}
+                onClick={() => setView(VIEWS.ADD_DRAFT)}
                 className="w-full bg-blue-600 hover:bg-blue-700 text-white font-medium py-2 px-4 rounded-lg text-sm transition-colors flex items-center justify-center gap-2 shadow-sm"
               >
                 <span>+ Add Subscription Draft</span>
               </button>
               <button
-                onClick={() => setView('all-subscriptions')}
+                onClick={() => setView(VIEWS.ALL_SUBSCRIPTIONS)}
                 className="w-full bg-white border border-gray-200 hover:bg-gray-50 text-gray-700 font-medium py-2 px-4 rounded-lg text-sm transition-colors mb-2"
               >
                 View All Subscriptions
@@ -157,11 +173,11 @@ function App() {
           </>
         )}
 
-        {view === 'add-draft' && (
+        {view === VIEWS.ADD_DRAFT && (
           <AddSubscriptionForm />
         )}
 
-        {view === 'all-subscriptions' && (
+        {view === VIEWS.ALL_SUBSCRIPTIONS && (
           <SubscriptionList />
         )}
       </main>

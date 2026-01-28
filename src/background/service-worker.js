@@ -95,21 +95,32 @@ async function checkUrlMatch(tabId, url) {
     if (!subscriptionCache.length) return;
 
     try {
-        const currentHost = new URL(url).hostname;
+        const currentHost = new URL(url).hostname.toLowerCase().replace(/^www\./, '');
 
         const match = subscriptionCache.find((sub) => {
             if (!sub.websiteUrl) return false;
 
             try {
                 // Robust normalization: Handle "figma.com/pricing", "http://figma.com", etc.
-                let normalizedUrl = sub.websiteUrl;
-                if (!normalizedUrl.startsWith('http')) normalizedUrl = 'https://' + normalizedUrl;
+                let normalizedUrl = sub.websiteUrl.trim();
+                // If it looks like a domain without protocol, prepend it
+                if (!normalizedUrl.startsWith('http')) {
+                    normalizedUrl = 'https://' + normalizedUrl;
+                }
 
-                const subHost = new URL(normalizedUrl).hostname.toLowerCase().replace(/^www\./, '');
-                const host = currentHost.toLowerCase().replace(/^www\./, '');
+                const subUrlObj = new URL(normalizedUrl);
+                const subHost = subUrlObj.hostname.toLowerCase().replace(/^www\./, '');
 
-                // Strict match OR subdomain match
-                return host === subHost || host.endsWith('.' + subHost) || subHost.endsWith('.' + host);
+                // 1. Exact Host Match
+                if (currentHost === subHost) return true;
+
+                // 2. Subdomain Match (e.g. app.figma.com matches figma.com)
+                if (currentHost.endsWith('.' + subHost)) return true;
+
+                // 3. Reverse Subdomain (e.g. figma.com matches www.figma.com if stored incorrectly)
+                if (subHost.endsWith('.' + currentHost)) return true;
+
+                return false;
             } catch {
                 return false;
             }
@@ -117,7 +128,6 @@ async function checkUrlMatch(tabId, url) {
 
         if (match) {
             console.log('URL Match found:', match.name);
-
             chrome.action.setBadgeText({ text: '✔', tabId });
             chrome.action.setBadgeBackgroundColor({ color: '#10B981', tabId });
         } else {
@@ -141,7 +151,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (message?.type === 'SUBSCRIPTION_DETECTED') {
         console.log('Background received subscription:', message.data);
 
-        chrome.storage.local.set({ detectedDraft: message.data }, () => {
+        // Standardize Data: Ensure amount is a number for consistent storage
+        const cleanDraft = {
+            ...message.data,
+            amount: parseFloat(message.data.amount) || null
+        };
+
+        chrome.storage.local.set({ detectedDraft: cleanDraft }, () => {
             console.log('Draft saved to storage');
 
             if (sender?.tab?.id) {
@@ -155,6 +171,24 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
     if (message?.type === 'CMD_SYNC_NOW' || message?.type === 'CMD_SYNC_ON_CONNECT') {
         syncSubscriptions().then(() => console.log('Sync complete'));
+        return;
+    }
+
+    if (message?.type === 'CMD_DRAFT_CONSUMED') {
+        // 1. Clear Storage
+        chrome.storage.local.remove('detectedDraft');
+
+        // 2. Clear Badge (if tabId provided)
+        if (message.tabId) {
+            chrome.action.setBadgeText({ text: '', tabId: message.tabId });
+        }
+        return;
+    }
+
+    if (message?.type === 'CMD_CLEAR_BADGE') {
+        if (message.tabId) {
+            chrome.action.setBadgeText({ text: '', tabId: message.tabId });
+        }
         return;
     }
 });
