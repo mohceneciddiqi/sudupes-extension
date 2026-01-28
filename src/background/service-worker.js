@@ -96,19 +96,21 @@ async function checkUrlMatch(tabId, url) {
             if (!sub.websiteUrl) return false;
 
             try {
-                // Normalize cleaning
-                const subHost = (sub.websiteUrl.startsWith('http')
-                    ? new URL(sub.websiteUrl).hostname
-                    : sub.websiteUrl).toLowerCase().replace(/^www\./, '');
+                // Robust Normalization: Handle "figma.com/pricing", "http://figma.com", etc.
+                let normalizedUrl = sub.websiteUrl;
+                if (!normalizedUrl.startsWith('http')) {
+                    normalizedUrl = 'https://' + normalizedUrl;
+                }
 
+                const subHost = new URL(normalizedUrl).hostname.toLowerCase().replace(/^www\./, '');
                 const host = currentHost.toLowerCase().replace(/^www\./, '');
 
                 // Strict Match OR Subdomain Match (e.g. app.figma.com ends with figma.com)
-                // We add a dot to ensure we don't match "ample.com" with "example.com"
                 return host === subHost ||
                     host.endsWith('.' + subHost) ||
                     subHost.endsWith('.' + host);
             } catch (e) {
+                // Return false if URL parsing fails (e.g. "Simons Sub" is not a URL)
                 return false;
             }
         });
@@ -119,39 +121,41 @@ async function checkUrlMatch(tabId, url) {
             // Inject "Insight UI" or set badge
             chrome.action.setBadgeText({ text: '✔', tabId });
             chrome.action.setBadgeBackgroundColor({ color: '#10B981', tabId }); // Green for "You have this"
+        } else {
+            // Clear badge if no match (fix for persistent badge on navigation)
+            chrome.action.setBadgeText({ text: '', tabId });
         }
     } catch (e) {
         // Invalid URL
     }
-}
 
-chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-    if (message.type === 'GET_USER_BCC') {
-        // Retrieve from storage or api
-        chrome.storage.local.get(['userProfile'], (result) => {
-            sendResponse({ bccEmail: result.userProfile?.bccEmail });
-        });
-        return true; // Async response
-    }
+    chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+        if (message.type === 'GET_USER_BCC') {
+            // Retrieve from storage or api
+            chrome.storage.local.get(['userProfile'], (result) => {
+                sendResponse({ bccEmail: result.userProfile?.bccEmail });
+            });
+            return true; // Async response
+        }
 
-    if (message.type === 'SUBSCRIPTION_DETECTED') {
-        console.log('Background received subscription:', message.data);
+        if (message.type === 'SUBSCRIPTION_DETECTED') {
+            console.log('Background received subscription:', message.data);
 
-        // Save to local storage so popup can pick it up
-        chrome.storage.local.set({ detectedDraft: message.data }, () => {
-            console.log('Draft saved to storage');
+            // Save to local storage so popup can pick it up
+            chrome.storage.local.set({ detectedDraft: message.data }, () => {
+                console.log('Draft saved to storage');
 
-            // Optional: Set badge to indicate something was found
-            if (sender.tab) {
-                chrome.action.setBadgeText({ text: '!', tabId: sender.tab.id });
-                chrome.action.setBadgeBackgroundColor({ color: '#2563EB', tabId: sender.tab.id });
-            }
-        });
-    }
+                // Optional: Set badge to indicate something was found
+                if (sender.tab) {
+                    chrome.action.setBadgeText({ text: '!', tabId: sender.tab.id });
+                    chrome.action.setBadgeBackgroundColor({ color: '#2563EB', tabId: sender.tab.id });
+                }
+            });
+        }
 
-    if (message.type === 'CMD_SYNC_NOW' || message.type === 'CMD_SYNC_ON_CONNECT') {
-        syncSubscriptions().then(() => {
-            console.log('Sync complete');
-        });
-    }
-});
+        if (message.type === 'CMD_SYNC_NOW' || message.type === 'CMD_SYNC_ON_CONNECT') {
+            syncSubscriptions().then(() => {
+                console.log('Sync complete');
+            });
+        }
+    });

@@ -23,7 +23,10 @@ const useStore = create((set) => ({
     checkStorage: () => {
         return new Promise((resolve) => {
             if (typeof chrome !== 'undefined' && chrome.storage) {
-                chrome.storage.local.get(['detectedDraft'], (result) => {
+                chrome.storage.local.get(['detectedDraft', 'subscriptions'], (result) => {
+                    if (result.subscriptions) {
+                        set({ subscriptions: result.subscriptions });
+                    }
                     if (result.detectedDraft) {
                         set({ draft: result.detectedDraft, view: 'add-draft' })
                         resolve(true);
@@ -35,7 +38,10 @@ const useStore = create((set) => ({
                 resolve(false);
             }
         });
-    }
+    },
+
+    subscriptions: [],
+    setSubscriptions: (subscriptions) => set({ subscriptions }),
 }))
 
 export default useStore

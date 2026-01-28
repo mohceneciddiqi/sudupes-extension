@@ -62,11 +62,20 @@ const api = {
             });
 
             if (!response.ok) {
-                const err = await response.json();
+                let errorMessage = 'Failed to create subscription';
+                try {
+                    const err = await response.json();
+                    errorMessage = err.message || errorMessage;
+                } catch (parseError) {
+                    // Fallback if response is not JSON (e.g. 500 HTML)
+                    const text = await response.text();
+                    console.warn('Non-JSON error response:', text);
+                }
+
                 if (response.status === 401) {
                     throw new Error('Please log in.');
                 }
-                throw new Error(err.message || 'Failed to create subscription');
+                throw new Error(errorMessage);
             }
 
             const json = await response.json();

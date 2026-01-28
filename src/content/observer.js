@@ -125,7 +125,7 @@ function scanPageForSubscription(force = false) {
             data: {
                 name: detectedName,
                 amount: detectedPrice,
-                currency: 'USD',
+                currency: detectedCurrency,
                 billingCycle: detectedCycle,
                 websiteUrl: window.location.origin
             }
@@ -149,7 +149,46 @@ function scanPageForSubscription(force = false) {
 
 // ... (retain listener) replaced with actual listeners:
 
-import { PRICE_HIKE_HTML } from './alertTemplate.js';
+const PRICE_HIKE_HTML = `
+<style>
+  @keyframes slideIn {
+    from { opacity: 0; transform: translateX(20px); }
+    to { opacity: 1; transform: translateX(0); }
+  }
+</style>
+<div id="subdupes-hike-alert" style="
+  position: fixed;
+  top: 20px;
+  right: 20px;
+  width: 300px;
+  background: white;
+  box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
+  border-radius: 8px;
+  z-index: 99999;
+  font-family: system-ui, -apple-system, sans-serif;
+  border-left: 4px solid #F59E0B;
+  animation: slideIn 0.3s ease-out;
+">
+  <div style="padding: 16px;">
+    <div style="display: flex; justify-content: space-between; align-items: start;">
+      <h3 style="margin: 0; font-size: 14px; font-weight: 600; color: #111827;">Price Change Detected</h3>
+      <button id="sd-close" style="background: none; border: none; cursor: pointer; color: #9CA3AF;">&times;</button>
+    </div>
+    
+    <div style="margin-top: 8px; font-size: 13px; color: #4B5563;">
+      <p style="margin: 0;">We noticed a difference from your last payment:</p>
+      <div style="display: flex; justify-content: space-between; margin-top: 8px; padding: 8px; background: #F3F4F6; border-radius: 4px;">
+        <span>Last Paid:</span>
+        <span style="font-weight: 600;">$__LAST_PRICE__</span>
+      </div>
+      <div style="display: flex; justify-content: space-between; margin-top: 4px; padding: 8px; background: #FEF3C7; border-radius: 4px; color: #92400E;">
+        <span>Current:</span>
+        <span style="font-weight: 600;">$__CURRENT_PRICE__</span>
+      </div>
+    </div>
+  </div>
+</div>
+`;
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (message.type === 'SHOW_NO_HIKE_ALERT') {
@@ -202,19 +241,25 @@ const observer = new MutationObserver((mutations) => {
     });
     if (!isRelevant) return;
 
-    // 3. THROTTLE: Check if we scanned recently
+    // 3. THROTTLE & DEBOUNCE
+    // We want to wait for the storm to settle (Debounce 3s)
+    // BUT we also want to ensure we don't scan too often (Throttle 5s)
+
     const now = Date.now();
-    if (now - lastScanTime < MIN_SCAN_INTERVAL) {
-        // If throttled, maybe schedule one for later, but don't run immediately
-        // Just let the debounce handle the tail end
+    const timeSinceLastScan = now - lastScanTime;
+
+    // Calculate delay: At least 3s debounce, but if throttled, wait remaining throttle time
+    let delay = 3000;
+    if (timeSinceLastScan < MIN_SCAN_INTERVAL) {
+        const remainingThrottle = MIN_SCAN_INTERVAL - timeSinceLastScan;
+        delay = Math.max(3000, remainingThrottle);
     }
 
-    // 4. DEBOUNCE: Wait for the storm to settle
     clearTimeout(debounceTimer);
     debounceTimer = setTimeout(() => {
         lastScanTime = Date.now();
         scanPageForSubscription(false); // Passive scan
-    }, 3000); // 3s settle time
+    }, delay);
 });
 
 // Optimization: Observe body but ignore attributes/characterData to save processing
