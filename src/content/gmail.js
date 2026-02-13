@@ -20,6 +20,10 @@ let userBccAlias = null;
 
 // Fetch alias on load
 chrome.runtime.sendMessage({ type: 'GET_USER_BCC' }, (response) => {
+    if (chrome.runtime.lastError) {
+        console.warn('Failed to fetch BCC alias:', chrome.runtime.lastError.message);
+        return;
+    }
     if (response?.bccEmail) {
         userBccAlias = response.bccEmail;
         console.log('SubDupes: Alias loaded', userBccAlias);
@@ -168,6 +172,11 @@ function addBccToFields(composeWindow) {
 
     if (!userBccAlias) {
         chrome.runtime.sendMessage({ type: 'GET_USER_BCC' }, (response) => {
+            if (chrome.runtime.lastError) {
+                console.error('Failed to fetch BCC alias:', chrome.runtime.lastError.message);
+                alert('Failed to connect to SubDupes extension. Please reload the page.');
+                return;
+            }
             if (response && response.bccEmail) {
                 userBccAlias = response.bccEmail;
                 performCopy(userBccAlias);

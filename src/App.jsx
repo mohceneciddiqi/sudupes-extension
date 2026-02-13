@@ -8,19 +8,23 @@ import { config } from './config'
 import { VIEWS } from './constants'
 
 function App() {
-  const { view, setView, checkStorage, setUser, user } = useStore()
+  const { view, setView, checkStorage, setUser } = useStore()
   const [init, setInit] = useState(false)
 
   const handleSync = async () => {
     // 1. Force Backend Sync
-    chrome.runtime.sendMessage({ type: 'CMD_SYNC_NOW' });
+    try {
+      chrome.runtime.sendMessage({ type: 'CMD_SYNC_NOW' });
+    } catch (error) {
+      console.error('Failed to send sync message:', error);
+    }
 
     // 2. Rescan Current Page
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
     if (tab?.id) {
       try {
         await chrome.tabs.sendMessage(tab.id, { type: 'CMD_SCAN_PAGE' });
-      } catch (e) {
+      } catch {
         console.log('Content script not ready or page not compatible');
       }
     }
@@ -28,6 +32,25 @@ function App() {
 
   // Initial Auth Check (Run Once)
   useEffect(() => {
+    const handleSyncInternal = async () => {
+      // 1. Force Backend Sync
+      try {
+        chrome.runtime.sendMessage({ type: 'CMD_SYNC_NOW' });
+      } catch (error) {
+        console.error('Failed to send sync message:', error);
+      }
+
+      // 2. Rescan Current Page
+      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+      if (tab?.id) {
+        try {
+          await chrome.tabs.sendMessage(tab.id, { type: 'CMD_SCAN_PAGE' });
+        } catch {
+          console.log('Content script not ready or page not compatible');
+        }
+      }
+    };
+
     const initApp = async () => {
       const currentUser = await api.checkAuth();
       if (currentUser) {
@@ -41,11 +64,16 @@ function App() {
       }
       setInit(true);
       // Trigger scan once on load
-      handleSync();
+      handleSyncInternal();
       // Trigger background sync to ensure cache is fresh
-      chrome.runtime.sendMessage({ type: 'CMD_SYNC_ON_CONNECT' });
+      try {
+        chrome.runtime.sendMessage({ type: 'CMD_SYNC_ON_CONNECT' });
+      } catch (error) {
+        console.error('Failed to send connect message:', error);
+      }
     };
     initApp();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Storage Listener
@@ -57,7 +85,8 @@ function App() {
       // Only update if we have a user (meaning we are in dashboard/authorized mode)
       if (area === 'local' && currentUser) {
         if (changes.detectedDraft) {
-          checkStorage();
+          // Use getState to avoid stale closure
+          useStore.getState().checkStorage();
         }
         if (changes.subscriptions) {
           // Instant update of subscription list
@@ -67,7 +96,7 @@ function App() {
     };
     chrome.storage.onChanged.addListener(handleStorageChange);
     return () => chrome.storage.onChanged.removeListener(handleStorageChange);
-  }, []); // Run once on mount
+  }, []); // Run once on mount - all dependencies accessed via getState()
 
   if (!init) return <div className="flex items-center justify-center h-full">Loading...</div>
 
@@ -120,7 +149,13 @@ function App() {
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
             </svg>
           </button>
-          <button className="text-gray-400 hover:text-gray-600 transition-colors">
+          <button
+            onClick={() => {
+              chrome.tabs.create({ url: `${config.FRONTEND_URL}/settings` });
+            }}
+            className="text-gray-400 hover:text-gray-600 transition-colors"
+            title="Settings"
+          >
             <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
@@ -154,9 +189,25 @@ function App() {
 
               <hr className="border-gray-100 my-3" />
 
-              <div onClick={() => {
+              <div onClick={async () => {
                 const query = 'subject:(receipt OR invoice OR subscription OR payment OR renewal) -from:me';
-                const url = `https://mail.google.com/mail/u/0/#search/${encodeURIComponent(query)}`;
+
+                // Try to detect current Gmail account index
+                let accountIndex = '0'; // Default to first account
+                try {
+                  const tabs = await chrome.tabs.query({ url: 'https://mail.google.com/*' });
+                  if (tabs.length > 0) {
+                    // Extract account index from existing Gmail tab
+                    const match = tabs[0].url.match(/\/mail\/u\/(\d+)\//);
+                    if (match) {
+                      accountIndex = match[1];
+                    }
+                  }
+                } catch (error) {
+                  console.log('Could not detect Gmail account, using default:', error);
+                }
+
+                const url = `https://mail.google.com/mail/u/${accountIndex}/#search/${encodeURIComponent(query)}`;
                 chrome.tabs.create({ url });
               }} className="cursor-pointer bg-indigo-50 hover:bg-indigo-100 border border-indigo-100 p-3 rounded-lg flex items-center gap-3 transition-colors">
                 <div className="bg-white p-1.5 rounded text-indigo-600 shadow-sm">

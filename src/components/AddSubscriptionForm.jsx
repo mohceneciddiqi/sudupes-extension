@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import useStore from '../store/useStore'
 import { api } from '../services/api'
+import { VIEWS } from '../constants'
 
 const AddSubscriptionForm = () => {
     const { draft, updateDraft, clearDraft, setView } = useStore()
@@ -14,6 +15,13 @@ const AddSubscriptionForm = () => {
         websiteUrl: draft?.websiteUrl || '',
         trialEndDate: draft?.trialEndDate || ''
     })
+
+    // Validation helper - centralized to keep consistency
+    const isValidAmount = (amount) => {
+        if (!amount || amount === '') return false;
+        const parsed = parseFloat(amount);
+        return !isNaN(parsed) && parsed > 0;
+    };
 
     const handleChange = (e) => {
         const { name, value } = e.target
@@ -46,8 +54,9 @@ const AddSubscriptionForm = () => {
                     // Smart Month Increment: Handle end-of-month (e.g., Jan 31 -> Feb 28/29)
                     const d = next.getDate();
                     next.setMonth(next.getMonth() + 1);
+                    // If date changed (e.g., Jan 31 became Mar 3), roll back to last day of target month
                     if (next.getDate() !== d) {
-                        next.setDate(0); // Set to last day of previous month
+                        next.setDate(0); // Sets to last day of the previous month (which is the target month)
                     }
                 }
                 // Set to Noon to avoid timezone flipping (off-by-one errors)
@@ -72,22 +81,27 @@ const AddSubscriptionForm = () => {
             }
 
             const parsedAmount = parseFloat(formData.amount);
-            if (isNaN(parsedAmount)) {
-                alert("Please enter a valid amount");
+            if (isNaN(parsedAmount) || parsedAmount <= 0) {
+                alert("Please enter a valid amount greater than 0");
                 return;
             }
 
             await api.createSubscription({
                 ...formData,
+                websiteUrl: cleanUrl, // Use normalized URL instead of formData.websiteUrl
                 amount: parsedAmount,
                 nextBillingDate: nextBillingDate,
             });
 
             alert('Subscription Saved to SubDupes!');
             clearDraft()
-            setView('dashboard')
+            setView(VIEWS.DASHBOARD)
             // Trigger a sync to update the list immediately
-            chrome.runtime.sendMessage({ type: 'CMD_SYNC_NOW' });
+            try {
+                chrome.runtime.sendMessage({ type: 'CMD_SYNC_NOW' });
+            } catch (error) {
+                console.error('Failed to trigger sync:', error);
+            }
 
         } catch (err) {
             alert('Error saving: ' + err.message);
@@ -96,7 +110,7 @@ const AddSubscriptionForm = () => {
 
     const handleDiscard = async () => {
         clearDraft();
-        setView('dashboard');
+        setView(VIEWS.DASHBOARD);
     };
 
     return (
@@ -203,7 +217,7 @@ const AddSubscriptionForm = () => {
                     </button>
                     <button
                         type="submit"
-                        disabled={!formData.amount || isNaN(parseFloat(formData.amount))}
+                        disabled={!isValidAmount(formData.amount)}
                         className="flex-1 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-300 disabled:cursor-not-allowed text-white font-medium py-2 px-4 rounded-lg text-sm transition-colors"
                     >
                         Save

@@ -1,9 +1,9 @@
 import useStore from '../store/useStore'
-import React from 'react'
+import React, { useState } from 'react'
+import { VIEWS } from '../constants'
 
 // --- Sub-Component for individual items to handle Image Error State ---
 const SubscriptionItem = ({ sub }) => {
-    const { useState } = React; // Assuming React is globally available or imported in parent
     const [imgError, setImgError] = useState(false);
 
     // Safely parse domain
@@ -15,7 +15,7 @@ const SubscriptionItem = ({ sub }) => {
                 safeUrl = 'https://' + safeUrl;
             }
             return new URL(safeUrl).hostname;
-        } catch (e) {
+        } catch {
             return '';
         }
     };

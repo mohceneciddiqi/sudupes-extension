@@ -3,12 +3,15 @@
 
 console.log('Use SubDupes Observer Loaded');
 
-const PRICING_REGEX = /[\$€£]\s?\d+(?:[\.,]\d{2})?\s?(?:\/|per|mo|month|yr|year|annually|wk|week|weekly)/i;
-const PLAN_KEYWORDS = ['Free', 'Pro', 'Basic', 'Enterprise', 'Starter', 'Premium', 'Team'];
+// Enhanced regex to support:
+// - Currency before or after number (e.g. "$99" or "99 EUR")
+// - Thousands separators (e.g. "1,299.99" or "1.299,99")
+// - Fractional prices (e.g. ".99" or ",99")
+const PRICING_REGEX = /(?:[$€£¥₹]\s?)?(?:\d{1,3}(?:[,.\s]\d{3})*(?:[.,]\d{1,2})?|\.\d{2}|,\d{2})\s?(?:[$€£¥₹]|USD|EUR|GBP|INR|JPY|AUD|CAD)?\s?(?:\/|per|mo|month|yr|year|annually|wk|week|weekly)/i;
 
 // Optimization: Only scan interesting pages
 const INTERESTING_URLS = ['pricing', 'billing', 'checkout', 'plan', 'subscription', 'upgrade', 'payment', 'cart'];
-const CURRENCY_SYMBOLS = ['$', '€', '£'];
+const CURRENCY_SYMBOLS = ['$', '€', '£', '¥', '₹', 'USD', 'EUR', 'GBP', 'INR', 'JPY'];
 
 function scanPageForSubscription(force = false) {
     // 1. FAST CHECK: URL Heuristic
@@ -31,25 +34,72 @@ function scanPageForSubscription(force = false) {
     // 1. Detect Price
     // Helper: Normalize price string (e.g. "1.200,00" -> "1200.00", "12,99" -> "12.99")
     const normalizePrice = (priceStr) => {
-        let clean = priceStr.replace(/[^\d\.,]/g, '');
+        if (!priceStr) return null;
+
+        let clean = priceStr.replace(/[^\d.,]/g, '').trim();
+
+        if (!clean) return null;
+
+        // Handle fractional prices like ".99" or ",99"
+        if (clean.startsWith('.') || clean.startsWith(',')) {
+            clean = '0' + clean.replace(',', '.');
+        }
+
+        // Remove spaces that might have been inserted
+        clean = clean.replace(/\s+/g, '');
+
+        // Detect invalid patterns (multiple decimals without thousands)
+        // e.g., "12.99.99" or "12,99,99" are invalid
+        const dotCount = (clean.match(/\./g) || []).length;
+        const commaCount = (clean.match(/,/g) || []).length;
+
+        // If more than one of the same separator and no clear thousands pattern, return null
+        if (dotCount > 1 && commaCount === 0) {
+            // Could be thousands like "1.234.567" but needs comma decimal
+            if (!clean.includes(',')) {
+                return null; // Invalid pattern
+            }
+        }
+        if (commaCount > 1 && dotCount === 0) {
+            // Could be thousands like "1,234,567" but needs dot decimal
+            if (!clean.includes('.')) {
+                return null; // Invalid pattern
+            }
+        }
+
         // Check for European format: comma at the end as decimal (e.g. 12,99)
         if (clean.includes(',') && !clean.includes('.')) {
             return clean.replace(',', '.');
         }
+
         if (clean.includes(',') && clean.includes('.')) {
-            // Both present: if dot is first (1.200,00), it's thousand sep
-            if (clean.indexOf('.') < clean.indexOf(',')) {
+            // Both present: determine which is thousand separator
+            const lastComma = clean.lastIndexOf(',');
+            const lastDot = clean.lastIndexOf('.');
+
+            // If dot comes after comma, dot is decimal (e.g. 1,299.99)
+            if (lastDot > lastComma) {
+                return clean.replace(/,/g, '');
+            } else {
+                // If comma comes after dot, comma is decimal (e.g. 1.299,99)
                 return clean.replace(/\./g, '').replace(',', '.');
             }
-            return clean.replace(/,/g, '');
         }
+
         return clean;
     };
 
     const detectCurrencyFromMatch = (matchStr) => {
-        if (matchStr.includes('€')) return 'EUR';
-        if (matchStr.includes('£')) return 'GBP';
-        return 'USD';
+        const str = matchStr.toUpperCase();
+        // Check for currency codes (EUR, USD, etc.)
+        if (str.includes('EUR') || matchStr.includes('€')) return 'EUR';
+        if (str.includes('GBP') || matchStr.includes('£')) return 'GBP';
+        if (str.includes('INR') || matchStr.includes('₹')) return 'INR';
+        if (str.includes('JPY') || str.includes('YEN') || matchStr.includes('¥')) return 'JPY';
+        if (str.includes('AUD')) return 'AUD';
+        if (str.includes('CAD')) return 'CAD';
+        if (str.includes('USD') || matchStr.includes('$')) return 'USD';
+        return 'USD'; // Default fallback
     };
 
     // 1. Detect Price
@@ -74,12 +124,18 @@ function scanPageForSubscription(force = false) {
         const match = priorityLine.match(PRICING_REGEX);
         if (match) {
             if (!match[0].includes('0.00')) {
-                const rawNum = match[0].match(/[\d\.,]+/)[0];
-                detectedPrice = normalizePrice(rawNum);
-                detectedCurrency = detectCurrencyFromMatch(match[0]);
+                const rawNum = match[0].match(/[\d.,]+/);
+                if (rawNum) {
+                    const normalized = normalizePrice(rawNum[0]);
+                    // Only set if normalization succeeded (not null)
+                    if (normalized) {
+                        detectedPrice = normalized;
+                        detectedCurrency = detectCurrencyFromMatch(match[0]);
 
-                if (priorityLine.match(/yr|year|annually/i)) detectedCycle = 'YEARLY';
-                if (priorityLine.match(/wk|week|weekly/i)) detectedCycle = 'WEEKLY';
+                        if (priorityLine.match(/yr|year|annually/i)) detectedCycle = 'YEARLY';
+                        if (priorityLine.match(/wk|week|weekly/i)) detectedCycle = 'WEEKLY';
+                    }
+                }
             }
         }
     }
@@ -89,11 +145,15 @@ function scanPageForSubscription(force = false) {
         const allPrices = textContent.match(new RegExp(PRICING_REGEX, 'g')) || [];
         if (allPrices.length > 0) {
             const rawPrice = allPrices.find(p => !p.includes('0.00')) || allPrices[0];
-            const rawNum = rawPrice.match(/[\d\.,]+/);
+            const rawNum = rawPrice.match(/[\d.,]+/);
 
             if (rawNum) {
-                detectedPrice = normalizePrice(rawNum[0]);
-                detectedCurrency = detectCurrencyFromMatch(rawPrice);
+                const normalized = normalizePrice(rawNum[0]);
+                // Only set if normalization succeeded (not null)
+                if (normalized) {
+                    detectedPrice = normalized;
+                    detectedCurrency = detectCurrencyFromMatch(rawPrice);
+                }
             }
             if (rawPrice.match(/yr|year|annually/i)) detectedCycle = 'YEARLY';
         }
@@ -140,9 +200,15 @@ function scanPageForSubscription(force = false) {
 
         // Send to Background -> Popup
         try {
-            chrome.runtime.sendMessage(payload);
-        } catch (err) {
+            chrome.runtime.sendMessage(payload, () => {
+                // Check for errors after sending
+                if (chrome.runtime.lastError) {
+                    console.log('Message sending failed:', chrome.runtime.lastError.message);
+                }
+            });
+        } catch (error) {
             // Extension context invalidated or no listener
+            console.log('Failed to send message:', error);
         }
     }
 }
@@ -263,12 +329,15 @@ const observer = new MutationObserver((mutations) => {
 });
 
 // Optimization: Observe body but ignore attributes/characterData to save processing
-// Optimization: Observe body but ignore attributes/characterData to save processing
 const isInterestingPage = () => {
     const url = window.location.href.toLowerCase();
     return INTERESTING_URLS.some(kw => url.includes(kw));
 };
 
+// Track observer state
+let isObserverActive = false;
+
+// Start observing if interesting page
 if (isInterestingPage()) {
     console.log('SubDupes: Pricing page detected, attaching observer.');
     observer.observe(document.body, {
@@ -277,8 +346,49 @@ if (isInterestingPage()) {
         attributes: false,
         characterData: false
     });
+    isObserverActive = true;
     // Initial scan
     scanPageForSubscription(false);
 } else {
     console.log('SubDupes: Not a pricing page, observer dormant.');
 }
+
+// Listen for SPA navigation and stop observer if page is no longer interesting
+// This prevents memory leaks on Single Page Applications
+let lastUrl = window.location.href;
+const urlCheckInterval = setInterval(() => {
+    const currentUrl = window.location.href;
+    if (currentUrl !== lastUrl) {
+        lastUrl = currentUrl;
+        const shouldObserve = isInterestingPage();
+
+        if (shouldObserve && !isObserverActive) {
+            // Page became interesting, start observing
+            console.log('SubDupes: Page navigation - now a pricing page, starting observer.');
+            observer.observe(document.body, {
+                childList: true,
+                subtree: true,
+                attributes: false,
+                characterData: false
+            });
+            isObserverActive = true;
+            scanPageForSubscription(false);
+        } else if (!shouldObserve && isObserverActive) {
+            // Page is no longer interesting, stop observing
+            console.log('SubDupes: Page navigation - no longer a pricing page, stopping observer.');
+            observer.disconnect();
+            isObserverActive = false;
+            // Clear any pending timers
+            clearTimeout(debounceTimer);
+        }
+    }
+}, 1000);
+
+// Cleanup on page unload
+window.addEventListener('beforeunload', () => {
+    clearInterval(urlCheckInterval);
+    clearTimeout(debounceTimer);
+    if (isObserverActive) {
+        observer.disconnect();
+    }
+});

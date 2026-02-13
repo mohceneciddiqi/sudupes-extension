@@ -13,15 +13,19 @@ const useStore = create((set) => ({
     clearDraft: () => {
         set({ draft: null });
         if (typeof chrome !== 'undefined' && chrome.tabs) {
-            // clear badge on active tab
-            chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
-                if (tabs[0]) {
-                    // Send signal to background to clear storage AND badge
-                    chrome.runtime.sendMessage({ type: 'CMD_DRAFT_CONSUMED', tabId: tabs[0].id });
-                } else {
-                    // If no active tab (unlikely in popup), just clear storage
-                    chrome.runtime.sendMessage({ type: 'CMD_DRAFT_CONSUMED' });
-                }
+            // Clear badge on ALL tabs, not just current window
+            chrome.tabs.query({}, (allTabs) => {
+                // Clear storage once
+                chrome.runtime.sendMessage({ type: 'CMD_DRAFT_CONSUMED' });
+
+                // Clear badges on all tabs that might have draft indicator
+                allTabs.forEach(tab => {
+                    if (tab.id) {
+                        chrome.action.setBadgeText({ text: '', tabId: tab.id }).catch(() => {
+                            // Tab might have been closed, ignore error
+                        });
+                    }
+                });
             });
         }
     },

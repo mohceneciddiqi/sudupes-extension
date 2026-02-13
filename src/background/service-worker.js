@@ -5,13 +5,27 @@ console.log('SubDupes Background Service Worker Loaded');
 // Cache for active subscriptions
 let subscriptionCache = [];
 
+// Helper to add timeout to promises
+function withTimeout(promise, timeoutMs = 10000) {
+    return Promise.race([
+        promise,
+        new Promise((_, reject) =>
+            setTimeout(() => reject(new Error('Request timeout')), timeoutMs)
+        )
+    ]);
+}
+
 // Sync on startup/alarm
 async function syncSubscriptions() {
     try {
-        const [subs, profile] = await Promise.all([
-            api.getSubscriptions(),
-            api.getUserProfile()
-        ]);
+        // Add 10 second timeout to API calls
+        const [subs, profile] = await withTimeout(
+            Promise.all([
+                api.getSubscriptions(),
+                api.getUserProfile()
+            ]),
+            10000 // 10 second timeout
+        );
 
         subscriptionCache = subs;
 
@@ -23,7 +37,7 @@ async function syncSubscriptions() {
 
         console.log('Synced:', { subs: subs.length, user: profile?.email });
     } catch (err) {
-        console.warn('Sync failed (likely not logged in):', err?.message || err);
+        console.warn('Sync failed (likely not logged in or timeout):', err?.message || err);
     }
 }
 
@@ -59,23 +73,66 @@ chrome.contextMenus.onClicked.addListener((info, tab) => {
     if (info.menuItemId !== 'save-to-subdupes') return;
     if (!tab?.id) return;
 
+    // Validate URL - only allow HTTP(S) URLs
+    let validUrl = tab.url;
+    if (!tab.url || (!tab.url.startsWith('http://') && !tab.url.startsWith('https://'))) {
+        // For non-HTTP URLs, show error
+        chrome.scripting.executeScript({
+            target: { tabId: tab.id },
+            func: () => alert('Cannot save from this page. Please use on regular web pages.')
+        });
+        return;
+    }
+
     const draft = {
         name: (tab.title || '').split(/[-|]/)[0].trim(),
         notes: info.selectionText,
-        websiteUrl: tab.url,
+        websiteUrl: validUrl,
         source: 'CONTEXT_MENU'
     };
 
-    chrome.storage.local.set({ detectedDraft: draft }, () => {
-        // Notify user visually
-        chrome.scripting.executeScript({
-            target: { tabId: tab.id },
-            func: () => alert('Selection saved to SubDupes draft! Open extension to review.')
-        });
-
-        // Set badge
-        chrome.action.setBadgeText({ text: '!', tabId: tab.id });
+    // Check for existing draft before overwriting
+    chrome.storage.local.get(['detectedDraft'], (result) => {
+        if (result.detectedDraft) {
+            // Existing draft found - ask user before overwriting
+            chrome.scripting.executeScript({
+                target: { tabId: tab.id },
+                func: () => confirm('A draft already exists. Replace it with this selection?')
+            }, (results) => {
+                if (results && results[0] && results[0].result === true) {
+                    // User confirmed - save the new draft
+                    saveDraft(draft, tab.id);
+                } else {
+                    console.log('User cancelled draft replacement');
+                }
+            });
+        } else {
+            // No existing draft - save directly
+            saveDraft(draft, tab.id);
+        }
     });
+
+    function saveDraft(draftData, tabId) {
+        chrome.storage.local.set({ detectedDraft: draftData }, () => {
+            if (chrome.runtime.lastError) {
+                console.error('Failed to save draft:', chrome.runtime.lastError);
+                chrome.scripting.executeScript({
+                    target: { tabId: tabId },
+                    func: () => alert('Failed to save draft. Please try again.')
+                });
+                return;
+            }
+
+            // Notify user visually
+            chrome.scripting.executeScript({
+                target: { tabId: tabId },
+                func: () => alert('Selection saved to SubDupes draft! Open extension to review.')
+            });
+
+            // Set badge
+            chrome.action.setBadgeText({ text: '!', tabId: tabId });
+        });
+    }
 });
 
 // URL Watcher for Price Hike / Already Subscribed Check
@@ -94,8 +151,22 @@ async function checkUrlMatch(tabId, url) {
 
     if (!subscriptionCache.length) return;
 
+    // Filter out non-HTTP(S) URLs early
+    if (!url || !url.startsWith('http://') && !url.startsWith('https://')) {
+        // Clear badge for chrome://, about:, file://, data:, etc.
+        chrome.action.setBadgeText({ text: '', tabId });
+        return;
+    }
+
     try {
-        const currentHost = new URL(url).hostname.toLowerCase().replace(/^www\./, '');
+        const urlObj = new URL(url);
+        const currentHost = urlObj.hostname.toLowerCase().replace(/^www\./, '');
+
+        // Skip localhost and internal IPs
+        if (currentHost === 'localhost' || currentHost.startsWith('127.') || currentHost.startsWith('192.168.') || currentHost.startsWith('10.')) {
+            chrome.action.setBadgeText({ text: '', tabId });
+            return;
+        }
 
         const match = subscriptionCache.find((sub) => {
             if (!sub.websiteUrl) return false;
@@ -103,6 +174,12 @@ async function checkUrlMatch(tabId, url) {
             try {
                 // Robust normalization: Handle "figma.com/pricing", "http://figma.com", etc.
                 let normalizedUrl = sub.websiteUrl.trim();
+
+                // Skip invalid or non-HTTP URLs in stored subscriptions
+                if (!normalizedUrl || normalizedUrl.startsWith('chrome://') || normalizedUrl.startsWith('about:') || normalizedUrl.startsWith('file://')) {
+                    return false;
+                }
+
                 // If it looks like a domain without protocol, prepend it
                 if (!normalizedUrl.startsWith('http')) {
                     normalizedUrl = 'https://' + normalizedUrl;
@@ -134,8 +211,10 @@ async function checkUrlMatch(tabId, url) {
             // Clear badge if no match (fix for persistent badge on navigation)
             chrome.action.setBadgeText({ text: '', tabId });
         }
-    } catch {
-        // Invalid URL
+    } catch (error) {
+        // Invalid URL - clear badge
+        console.warn('Invalid URL in checkUrlMatch:', url, error);
+        chrome.action.setBadgeText({ text: '', tabId });
     }
 }
 
@@ -158,6 +237,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         };
 
         chrome.storage.local.set({ detectedDraft: cleanDraft }, () => {
+            if (chrome.runtime.lastError) {
+                console.error('Failed to save detected draft:', chrome.runtime.lastError);
+                return;
+            }
+
             console.log('Draft saved to storage');
 
             if (sender?.tab?.id) {
