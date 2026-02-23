@@ -502,11 +502,11 @@ const PRICE_HIKE_HTML = `
       <p style="margin: 0;">We noticed a difference from your last payment:</p>
       <div style="display: flex; justify-content: space-between; margin-top: 8px; padding: 8px; background: #F3F4F6; border-radius: 4px;">
         <span>Last Paid:</span>
-        <span style="font-weight: 600;">$__LAST_PRICE__</span>
+        <span style="font-weight: 600;">__CURRENCY____LAST_PRICE__</span>
       </div>
       <div style="display: flex; justify-content: space-between; margin-top: 4px; padding: 8px; background: #FEF3C7; border-radius: 4px; color: #92400E;">
         <span>Current:</span>
-        <span style="font-weight: 600;">$__CURRENT_PRICE__</span>
+        <span style="font-weight: 600;">__CURRENCY____CURRENT_PRICE__</span>
       </div>
     </div>
   </div>
@@ -516,11 +516,67 @@ const PRICE_HIKE_HTML = `
 // ─── Message Listeners ─────────────────────────────────────────────────────
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-    // TODO: Price hike detection — these handlers are ready but the trigger
-    // logic (comparing current page price vs stored subscription amount)
-    // needs to be implemented in the service worker's checkUrlMatch flow.
-    // When implemented, the service worker should send SHOW_PRICE_HIKE_ALERT
-    // with { lastPrice, currentPrice } when a price increase is detected.
+    // Price hike detection: triggered by the service worker when the tab URL
+    // matches a stored subscription. We extract the page's current price and
+    // compare it to the stored amount.
+    if (message.type === 'DETECT_PRICE_HIKE') {
+        const { storedAmount, storedCurrency, subscriptionName } = message.data || {};
+        if (!storedAmount || storedAmount <= 0) return;
+
+        try {
+            const bodyText = document.body?.innerText || '';
+            // Collect all price matches from the page
+            const allRegexes = [PRICING_REGEX, PRICING_REGEX_CODE_FIRST, PRICE_STANDALONE_REGEX, PRICE_STANDALONE_CODE_FIRST, PRICE_NUMBER_FIRST, PRICE_NUMBER_FIRST_CODE];
+            let priceMatches = [];
+            for (const regex of allRegexes) {
+                const matches = bodyText.match(new RegExp(regex.source, 'gi')) || [];
+                priceMatches.push(...matches);
+            }
+            priceMatches = [...new Set(priceMatches.map(m => m.trim()))];
+
+            if (priceMatches.length === 0) return;
+
+            // Re-use existing robust normalization for price comparisons
+            const prices = priceMatches
+                .map(m => normalizePrice(m))
+                .filter(p => p !== null)
+                .map(p => parseFloat(p))
+                .filter(p => p > 0);
+
+            if (prices.length === 0) return;
+
+            // Find the price closest to (but potentially higher than) the stored amount
+            const closestPrice = prices.reduce((best, p) => {
+                const bestDiff = Math.abs(best - storedAmount);
+                const pDiff = Math.abs(p - storedAmount);
+                return pDiff < bestDiff ? p : best;
+            }, prices[0]);
+
+            // Trigger alert if the current price is >5% higher than stored
+            const hikeThreshold = storedAmount * 1.05;
+            if (closestPrice > hikeThreshold) {
+                console.log(`SubDupes: Price hike detected for ${subscriptionName}! Stored: ${storedAmount}, Current: ${closestPrice}`);
+
+                const currencySymbols = { USD: '$', EUR: '€', GBP: '£', INR: '₹', JPY: '¥', PKR: '₨', BRL: 'R$', TRY: '₺' };
+                const symbol = currencySymbols[storedCurrency] || storedCurrency || '$';
+
+                const container = document.createElement('div');
+                container.innerHTML = PRICE_HIKE_HTML
+                    .replace(/__CURRENCY__/g, symbol)
+                    .replace('__LAST_PRICE__', storedAmount.toFixed(2))
+                    .replace('__CURRENT_PRICE__', closestPrice.toFixed(2));
+                document.body.appendChild(container);
+
+                const closeBtn = document.getElementById('sd-close');
+                if (closeBtn) closeBtn.onclick = () => container.remove();
+            }
+        } catch (e) {
+            console.warn('SubDupes: Price hike detection error:', e);
+        }
+        return;
+    }
+
+    // Legacy handler: direct SHOW_PRICE_HIKE_ALERT from other sources
     if (message.type === 'SHOW_PRICE_HIKE_ALERT') {
         const { lastPrice, currentPrice } = message.data;
         if (document.getElementById('subdupes-hike-alert')) return;

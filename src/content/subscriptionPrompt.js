@@ -5,7 +5,7 @@ console.log('SubDupes Subscription Prompt Module Loaded');
 
 // ─── State ─────────────────────────────────────────────────────────────────
 
-let promptShown = false;
+let shownPromptTypes = new Set();
 let dismissedDomains = new Set();
 
 // Load dismissed domains from storage
@@ -20,7 +20,8 @@ try {
 
 // ─── Prompt HTML Template ──────────────────────────────────────────────────
 
-function buildPromptHTML(data) {
+function buildPromptHTML(message) {
+    const data = message.data || {};
     const currencySymbols = { USD: '$', EUR: '€', GBP: '£', INR: '₹', JPY: '¥' };
     const symbol = currencySymbols[data.currency] || data.currency || '$';
     const amount = data.amount ? `${symbol}${parseFloat(data.amount).toFixed(2)}` : 'Detected';
@@ -30,6 +31,27 @@ function buildPromptHTML(data) {
     const escapeHTML = (str) => String(str || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#039;');
     const safeName = escapeHTML(data.name);
     const planLabel = data.planName ? ` — ${escapeHTML(data.planName)}` : '';
+    const type = data.type || message.type || 'SHOW_SUBSCRIPTION_PROMPT';
+
+    let titleText = 'Subscription Detected 🎯';
+    let subtitleText = "Looks like you're about to subscribe. Save it to track and never overpay!";
+    let primaryBtnText = '💾 Save to SubDupes';
+    let headerGradient = 'linear-gradient(135deg, #2563EB 0%, #7C3AED 100%)';
+    let btnGradient = 'linear-gradient(135deg, #2563EB 0%, #3B82F6 100%)';
+
+    if (type === 'SHOW_ALREADY_SUBSCRIBED_TOAST') {
+        titleText = 'Already Subscribed ✅';
+        subtitleText = `You're already tracking <b>${safeName}</b> at ${symbol}${parseFloat(data.storedAmount || 0).toFixed(2)}/mo.`;
+        primaryBtnText = '👀 View in SubDupes';
+        headerGradient = 'linear-gradient(135deg, #10B981 0%, #059669 100%)';
+        btnGradient = 'linear-gradient(135deg, #10B981 0%, #059669 100%)';
+    } else if (type === 'SHOW_RECEIPT_IMPORT_PROMPT') {
+        titleText = 'Receipt Found 📧';
+        subtitleText = `Found a receipt for <b>${safeName}</b>. Import this to your list?`;
+        primaryBtnText = '📥 Import Now';
+        headerGradient = 'linear-gradient(135deg, #8B5CF6 0%, #6D28D9 100%)';
+        btnGradient = 'linear-gradient(135deg, #8B5CF6 0%, #6D28D9 100%)';
+    }
 
     return `
     <div id="subdupes-save-prompt" style="
@@ -61,7 +83,7 @@ function buildPromptHTML(data) {
 
         <!-- Header Bar -->
         <div style="
-            background: linear-gradient(135deg, #2563EB 0%, #7C3AED 100%);
+            background: ${headerGradient};
             padding: 14px 16px;
             display: flex;
             align-items: center;
@@ -94,10 +116,10 @@ function buildPromptHTML(data) {
         <!-- Body -->
         <div style="padding: 16px 16px 12px;">
             <div style="font-size: 14px; font-weight: 600; color: #111827; margin-bottom: 4px;">
-                Subscription Detected 🎯
+                ${titleText}
             </div>
             <p style="font-size: 12px; color: #6B7280; margin: 0 0 14px; line-height: 1.4;">
-                Looks like you're about to subscribe. Save it to track and never overpay!
+                ${subtitleText}
             </p>
 
             <!-- Detected Details Card -->
@@ -124,7 +146,7 @@ function buildPromptHTML(data) {
             <button id="sd-prompt-save" style="
                 width: 100%;
                 padding: 10px 16px;
-                background: linear-gradient(135deg, #2563EB 0%, #3B82F6 100%);
+                background: ${btnGradient};
                 color: white;
                 border: none;
                 border-radius: 10px;
@@ -134,7 +156,7 @@ function buildPromptHTML(data) {
                 transition: opacity 0.2s, transform 0.1s;
                 letter-spacing: -0.01em;
             " onmouseover="this.style.opacity='0.9'" onmouseout="this.style.opacity='1'" onmousedown="this.style.transform='scale(0.98)'" onmouseup="this.style.transform='scale(1)'">
-                💾 Save to SubDupes
+                ${primaryBtnText}
             </button>
 
             <div style="display: flex; gap: 8px; margin-top: 8px;">
@@ -184,21 +206,22 @@ function buildPromptHTML(data) {
 
 // ─── Prompt Lifecycle ──────────────────────────────────────────────────────
 
-let promptData = null;
 let autoDismissTimer = null;
 
-function showPrompt(data) {
+function showPrompt(message) {
+    const data = message.data || {};
+    const type = message.type || 'SHOW_SUBSCRIPTION_PROMPT';
+
     // Guards
-    if (promptShown) return;
+    if (shownPromptTypes.has(type)) return;
     if (dismissedDomains.has(window.location.hostname)) return;
     if (document.getElementById('subdupes-save-prompt')) return;
 
-    promptShown = true;
-    promptData = data;
+    shownPromptTypes.add(type);
 
     const container = document.createElement('div');
     container.id = 'subdupes-prompt-container';
-    container.innerHTML = buildPromptHTML(data);
+    container.innerHTML = buildPromptHTML(message);
     document.body.appendChild(container);
 
     // Start auto-dismiss timer bar animation
@@ -213,7 +236,7 @@ function showPrompt(data) {
     }, 15000);
 
     // Bind event handlers
-    bindPromptActions(data);
+    bindPromptActions(message);
 }
 
 function removePrompt() {
@@ -229,7 +252,10 @@ function removePrompt() {
     // Don't reset promptShown — prevent re-showing on same page load
 }
 
-function bindPromptActions(data) {
+function bindPromptActions(message) {
+    const data = message.data || {};
+    const type = data.type || message.type || 'SHOW_SUBSCRIPTION_PROMPT';
+
     // Close button
     const closeBtn = document.getElementById('sd-prompt-close');
     if (closeBtn) closeBtn.addEventListener('click', removePrompt);
@@ -238,6 +264,12 @@ function bindPromptActions(data) {
     const saveBtn = document.getElementById('sd-prompt-save');
     if (saveBtn) {
         saveBtn.addEventListener('click', () => {
+            if (type === 'SHOW_ALREADY_SUBSCRIBED_TOAST') {
+                try { chrome.runtime.sendMessage({ type: 'OPEN_POPUP' }); } catch { /* Ignore */ }
+                removePrompt();
+                return;
+            }
+
             // Send save request to background
             const cleanData = {
                 name: data.name,
@@ -246,7 +278,7 @@ function bindPromptActions(data) {
                 currency: data.currency || 'USD',
                 billingCycle: data.billingCycle || 'MONTHLY',
                 websiteUrl: data.websiteUrl || window.location.origin,
-                source: 'PROACTIVE_PROMPT',
+                source: type === 'SHOW_RECEIPT_IMPORT_PROMPT' ? 'GMAIL_IMPORT' : 'PROACTIVE_PROMPT',
                 detectedAt: new Date().toISOString()
             };
 
@@ -264,7 +296,7 @@ function bindPromptActions(data) {
             }
 
             // Visual feedback
-            saveBtn.textContent = '✓ Saved!';
+            saveBtn.textContent = '✓ Done!';
             saveBtn.style.background = 'linear-gradient(135deg, #059669 0%, #10B981 100%)';
 
             setTimeout(() => removePrompt(), 1500);
@@ -273,9 +305,7 @@ function bindPromptActions(data) {
 
     // Dismiss button
     const dismissBtn = document.getElementById('sd-prompt-dismiss');
-    if (dismissBtn) {
-        dismissBtn.addEventListener('click', removePrompt);
-    }
+    if (dismissBtn) dismissBtn.addEventListener('click', removePrompt);
 
     // "Not a subscription" button — block this domain
     const blockBtn = document.getElementById('sd-prompt-block');
@@ -283,14 +313,11 @@ function bindPromptActions(data) {
         blockBtn.addEventListener('click', () => {
             const domain = window.location.hostname;
             dismissedDomains.add(domain);
-
-            // Persist to storage
             try {
                 chrome.storage.local.set({
                     dismissedDomains: Array.from(dismissedDomains)
                 });
             } catch { /* Ignore */ }
-
             removePrompt();
         });
     }
@@ -299,17 +326,16 @@ function bindPromptActions(data) {
 // ─── Message Listener ──────────────────────────────────────────────────────
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-    // Triggered by observer.js via background relay or directly
-    if (message.type === 'SHOW_SUBSCRIPTION_PROMPT') {
-        showPrompt(message.data);
+    if (message.type === 'SHOW_SUBSCRIPTION_PROMPT' ||
+        message.type === 'SHOW_ALREADY_SUBSCRIBED_TOAST' ||
+        message.type === 'SHOW_RECEIPT_IMPORT_PROMPT') {
+        showPrompt(message);
     }
 });
 
-// Also listen for the SUBSCRIPTION_PROMPT_READY from observer (same content script context)
-// Since observer.js and subscriptionPrompt.js run in the same content script scope,
-// we can use a custom event for in-page communication
+// For in-page communication (from observer.js)
 window.addEventListener('subdupes-prompt-ready', (e) => {
     if (e.detail) {
-        showPrompt(e.detail);
+        showPrompt({ type: 'SHOW_SUBSCRIPTION_PROMPT', data: e.detail });
     }
 });

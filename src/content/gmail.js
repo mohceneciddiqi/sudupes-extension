@@ -1,5 +1,10 @@
-// Gmail Integration for SubDupes
 console.log('SubDupes Gmail Module Loaded');
+
+const GMAIL_PRICE_REGEX = /(?:[$€£¥₹₨]|Rs\.?|R\$)\s?(?:\d{1,3}(?:[,.\s]\d{3})*(?:[.,]\d{1,2})?|\.\d{2}|,\d{2})\s?(?:\/|per|mo|month|yr|year|annually|wk|week|weekly)/i;
+const GMAIL_RECEIPT_WORDS = ['receipt', 'invoice', 'order confirmation', 'subscription', 'payment', 'billed', 'thank you for your purchase'];
+const GMAIL_KNOWN_SENDERS = ['netflix.com', 'spotify.com', 'openai.com', 'microsoft.com', 'amazon.com', 'google.com', 'apple.com', 'adobe.com', 'canva.com', 'zoom.us'];
+
+let lastScannedThreadId = null;
 
 // 1. Structural Selector: Dialog containing stable Gmail fields
 const isComposeWindow = (node) => {
@@ -192,22 +197,123 @@ function addBccToFields(composeWindow) {
 }
 
 
-// Observer for new compose windows
+// ─── Thread Scanner (Feature 5) ───────────────────────────────────────────
+
+const scanGmailThread = () => {
+    // Check if we are in a thread view
+    const threadContainer = document.querySelector('div[role="main"] .if');
+    if (!threadContainer) return;
+
+    // Use Gmail's thread ID from URL if possible to avoid re-scanning
+    const threadId = (window.location.hash.match(/#\w+\/([\w\d]+)/) || [])[1];
+    if (threadId === lastScannedThreadId) return;
+    lastScannedThreadId = threadId;
+
+    console.log('SubDupes: Scanning thread for receipts...');
+
+    const bodyText = threadContainer.innerText || '';
+
+    // Heuristic: Must be from a known sender or contain receipt keywords
+    const senderEl = document.querySelector('.gD');
+    let senderDomain = '';
+    let isWhitelisted = false;
+
+    if (senderEl) {
+        const email = senderEl.getAttribute('email') || '';
+        senderDomain = email.split('@')[1]?.toLowerCase() || '';
+        isWhitelisted = GMAIL_KNOWN_SENDERS.some(domain => senderDomain.includes(domain));
+    }
+
+    const hasReceiptWord = GMAIL_RECEIPT_WORDS.some(word => bodyText.toLowerCase().includes(word));
+
+    // If not on whitelist and no receipt words, skip
+    if (!isWhitelisted && !hasReceiptWord) return;
+
+    const priceMatch = bodyText.match(GMAIL_PRICE_REGEX);
+    if (!priceMatch) return;
+
+    // Heuristic: If we have a price and a receipt word/whitelist, it's likely a receipt
+    const rawPrice = priceMatch[0];
+
+    // Improve formatting handling (Feature 5: Fix European format)
+    let cleanPrice = rawPrice.replace(/[^\d.,]/g, '').trim();
+    // If it has coma as decimal (e.g. 19,99) or European style (1.299,99)
+    const dotCount = (cleanPrice.match(/\./g) || []).length;
+    const commaCount = (cleanPrice.match(/,/g) || []).length;
+
+    if (commaCount === 1 && dotCount === 0) {
+        cleanPrice = cleanPrice.replace(',', '.'); // 19,99 -> 19.99
+    } else if (commaCount === 1 && dotCount === 1) {
+        // Assume last one is decimal if it's after the dot
+        if (cleanPrice.lastIndexOf(',') > cleanPrice.lastIndexOf('.')) {
+            cleanPrice = cleanPrice.replace(/\./g, '').replace(',', '.'); // 1.299,99 -> 1299.99
+        } else {
+            cleanPrice = cleanPrice.replace(/,/g, ''); // 1,299.99 -> 1299.99
+        }
+    } else {
+        cleanPrice = cleanPrice.replace(/,/g, '');
+    }
+
+    const amount = parseFloat(cleanPrice);
+    if (!amount || amount <= 0) return;
+
+    // Extract service name from sender
+    let serviceName = senderDomain ? senderDomain.split('.')[0] : 'Subscription';
+    serviceName = serviceName.charAt(0).toUpperCase() + serviceName.slice(1);
+
+    // Expand Currency Detection (Feature 6)
+    let currency = 'USD';
+    const pUpper = rawPrice.toUpperCase();
+    if (rawPrice.includes('€')) currency = 'EUR';
+    else if (rawPrice.includes('£')) currency = 'GBP';
+    else if (rawPrice.includes('₹')) currency = 'INR';
+    else if (rawPrice.includes('₨') || pUpper.includes('RS')) currency = 'PKR';
+    else if (rawPrice.includes('R$')) currency = 'BRL';
+    else if (rawPrice.includes('₺')) currency = 'TRY';
+
+    chrome.runtime.sendMessage({
+        type: 'RECEIPT_DETECTED',
+        data: {
+            name: serviceName,
+            amount: amount,
+            currency: currency,
+            websiteUrl: senderDomain || '',
+            billingCycle: rawPrice.toLowerCase().includes('yr') ? 'YEARLY' : 'MONTHLY',
+            source: 'GMAIL_SCAN'
+        }
+    });
+};
+
+// Observer for new compose windows and thread views
 const observer = new MutationObserver((mutations) => {
+    let shouldScanThread = false;
+
     for (const mutation of mutations) {
         for (const node of mutation.addedNodes) {
             if (isComposeWindow(node)) {
                 injectBccButton(node);
             } else if (node.nodeType === 1 && node.querySelectorAll) {
-                // Determine if any children are valid compose windows (e.g. if a container was added)
-                // We search for the toolbar class within dialogs because selectors are cheaper than full checks
                 const dialogs = node.querySelectorAll('div[role="dialog"]');
                 dialogs.forEach(dialog => {
                     if (isComposeWindow(dialog)) injectBccButton(dialog);
                 });
+
+                // Check for thread entry
+                if (node.classList?.contains('if') || node.querySelector('.if')) {
+                    shouldScanThread = true;
+                }
             }
         }
+    }
+
+    if (shouldScanThread) {
+        setTimeout(scanGmailThread, 1000); // Wait for body to load
     }
 });
 
 observer.observe(document.body, { childList: true, subtree: true });
+
+// Initial scan
+if (window.location.hash.includes('#')) {
+    setTimeout(scanGmailThread, 2000);
+}

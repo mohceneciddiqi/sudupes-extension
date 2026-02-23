@@ -216,7 +216,11 @@ chrome.runtime.onInstalled.addListener(() => {
 });
 
 chrome.alarms.onAlarm.addListener((alarm) => {
-    if (alarm.name === 'dailySync') syncSubscriptions();
+    if (alarm.name === 'dailySync') {
+        console.log('Performing daily background sync...');
+        syncSubscriptions();
+        checkUpcomingRenewals();
+    }
 });
 
 // ─── Context Menu ──────────────────────────────────────────────────────────
@@ -280,7 +284,45 @@ chrome.contextMenus.onClicked.addListener((info, tab) => {
     }
 });
 
-// ─── URL Watcher for Price Hike / Already Subscribed Check ─────────────────
+// ─── Help Helpers ──────────────────────────────────────────────────────────
+
+async function trackLastVisited(subId) {
+    if (!subId) return;
+    chrome.storage.local.get(['lastVisited'], (result) => {
+        const lastVisited = result.lastVisited || {};
+        lastVisited[subId] = new Date().toISOString();
+        chrome.storage.local.set({ lastVisited });
+    });
+}
+
+function checkUpcomingRenewals() {
+    chrome.storage.local.get(['subscriptions', 'userProfile'], (result) => {
+        const subs = result.subscriptions || [];
+        if (!subs.length) return;
+
+        const now = new Date();
+        const notifyThresholds = [1, 3, 7]; // Days ahead to notify
+
+        subs.forEach(sub => {
+            const checkDate = sub.trialEndDate ? new Date(sub.trialEndDate) : (sub.nextBillingDate ? new Date(sub.nextBillingDate) : null);
+            if (!checkDate || isNaN(checkDate.getTime())) return;
+
+            const diffTime = checkDate - now;
+            const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+
+            if (notifyThresholds.includes(diffDays)) {
+                const type = sub.trialEndDate ? 'Trial Expiring' : 'Renewal Upcoming';
+                chrome.notifications.create(`renew-${sub.id || sub._id}-${diffDays}`, {
+                    type: 'basic',
+                    iconUrl: '/icons/icon128.png',
+                    title: `SubDupes: ${type}`,
+                    message: `${sub.name} ${type.toLowerCase()} in ${diffDays} day${diffDays === 1 ? '' : 's'}. (${sub.currency} ${sub.amount})`,
+                    priority: 2
+                });
+            }
+        });
+    });
+}
 
 chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
     if (changeInfo.status === 'complete' && tab?.url) {
@@ -339,6 +381,45 @@ async function checkUrlMatch(tabId, url) {
             console.log('URL Match found:', match.name);
             chrome.action.setBadgeText({ text: '✔', tabId });
             chrome.action.setBadgeBackgroundColor({ color: '#10B981', tabId });
+
+            // Record visit for unused subscription detection
+            trackLastVisited(match.id || match._id);
+
+            // Price hike detection: ask the content script to compare
+            // the current page's detected price against the stored amount
+            try {
+                chrome.tabs.sendMessage(tabId, {
+                    type: 'DETECT_PRICE_HIKE',
+                    data: {
+                        storedAmount: parseFloat(match.amount) || 0,
+                        storedCurrency: match.currency || 'USD',
+                        subscriptionName: match.name
+                    }
+                }).catch(() => { /* Content script may not be ready */ });
+            } catch { /* Ignore */ }
+
+            // Feature 6: Smart "Already Subscribed" Toast (with 24h cooldown)
+            chrome.storage.local.get(['toastCooldowns'], (result) => {
+                const cooldowns = result.toastCooldowns || {};
+                const now = Date.now();
+                const lastShow = cooldowns[match.websiteUrl] || 0;
+
+                if (now - lastShow > 24 * 60 * 60 * 1000) {
+                    chrome.tabs.sendMessage(tabId, {
+                        type: 'SHOW_ALREADY_SUBSCRIBED_TOAST',
+                        data: {
+                            name: match.name,
+                            storedAmount: match.amount,
+                            storedCurrency: match.currency,
+                            websiteUrl: match.websiteUrl
+                        }
+                    }).then(() => {
+                        // Update cooldown only on success
+                        cooldowns[match.websiteUrl] = now;
+                        chrome.storage.local.set({ toastCooldowns: cooldowns });
+                    }).catch(() => { });
+                }
+            });
         } else {
             chrome.action.setBadgeText({ text: '', tabId });
         }
@@ -462,6 +543,28 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (message?.type === 'CMD_CLEAR_BADGE') {
         if (message.tabId) {
             chrome.action.setBadgeText({ text: '', tabId: message.tabId });
+        }
+        return;
+    }
+
+    // Feature 5: Relay Gmail receipt import prompt
+    if (message?.type === 'RECEIPT_DETECTED') {
+        if (sender?.tab?.id) {
+            chrome.tabs.sendMessage(sender.tab.id, {
+                type: 'SHOW_RECEIPT_IMPORT_PROMPT',
+                data: message.data
+            }).catch(() => { });
+        }
+        return;
+    }
+
+    // Feature 6: Open popup or invite user
+    if (message?.type === 'OPEN_POPUP') {
+        // Note: Chrome doesn't allow programmatically opening the popup itself.
+        // We set the badge to '!' to invite the user.
+        if (sender?.tab?.id) {
+            chrome.action.setBadgeText({ text: '!', tabId: sender.tab.id });
+            chrome.action.setBadgeBackgroundColor({ color: '#10B981', tabId: sender.tab.id });
         }
         return;
     }

@@ -1,24 +1,26 @@
 import useStore from '../store/useStore'
-import React, { useState, useMemo } from 'react'
-import { VIEWS } from '../constants'
+import React, { useState, useMemo, useEffect } from 'react'
+import { VIEWS, DOMAIN_CATEGORIES } from '../constants'
+
+// --- Utility Functions ---
+const getDomain = (url) => {
+    try {
+        if (!url) return '';
+        let safeUrl = url.trim();
+        if (!safeUrl.startsWith('http')) {
+            safeUrl = 'https://' + safeUrl;
+        }
+        return new URL(safeUrl).hostname;
+    } catch {
+        return '';
+    }
+};
 
 // --- Sub-Component for individual items to handle Image Error State ---
 const SubscriptionItem = ({ sub }) => {
     const [imgError, setImgError] = useState(false);
 
-    // Safely parse domain
-    const getDomain = (url) => {
-        try {
-            if (!url) return '';
-            let safeUrl = url.trim();
-            if (!safeUrl.startsWith('http')) {
-                safeUrl = 'https://' + safeUrl;
-            }
-            return new URL(safeUrl).hostname;
-        } catch {
-            return '';
-        }
-    };
+
 
     const domain = getDomain(sub.websiteUrl);
     // Use clearbit as secondary? No, stick to Google for now as primary, but fail gracefull.
@@ -72,23 +74,39 @@ const SubscriptionItem = ({ sub }) => {
 
 const SubscriptionList = () => {
     const { subscriptions, setView, user } = useStore()
+    const [lastVisited, setLastVisited] = useState({});
+
+    useEffect(() => {
+        chrome.storage.local.get(['lastVisited'], (result) => {
+            if (result.lastVisited) setLastVisited(result.lastVisited);
+        });
+    }, []);
 
     // --- Calculations ---
 
     // 1. Total Count (Exclude SubDupes Rewards)
     const totalCount = subscriptions.filter(s => !s.name.includes('SubDupes')).length;
 
-    // 2. Total Monthly Spend (Normalizing Yearly loops)
-    const totalMonthlySpend = subscriptions.reduce((acc, sub) => {
-        // Exclude SubDupes rewards from spend
-        if (sub.name.includes('SubDupes')) return acc;
+    // 2. Total Monthly Spend (Normalizing Yearly loops and normalizing currencies for budget check)
+    const normalizeToUSD = (amount, currency) => {
+        const rates = { USD: 1, EUR: 1.08, GBP: 1.26, INR: 0.012, PKR: 0.0036, BRL: 0.20, TRY: 0.031 };
+        return amount * (rates[currency] || 1);
+    };
 
+    const totalMonthlySpendNormalized = subscriptions.reduce((acc, sub) => {
+        if (sub.name.includes('SubDupes')) return acc;
         let amount = Number(sub.amount || 0);
-        if (sub.billingCycle === 'YEARLY') {
-            amount = amount / 12;
-        } else if (sub.billingCycle === 'WEEKLY') {
-            amount = amount * 4.345; // 52 weeks / 12 months
-        }
+        if (sub.billingCycle === 'YEARLY') amount = amount / 12;
+        else if (sub.billingCycle === 'WEEKLY') amount = amount * 4.345;
+
+        return acc + normalizeToUSD(amount, sub.currency || 'USD');
+    }, 0);
+
+    const totalMonthlySpend = subscriptions.reduce((acc, sub) => {
+        if (sub.name.includes('SubDupes')) return acc;
+        let amount = Number(sub.amount || 0);
+        if (sub.billingCycle === 'YEARLY') amount = amount / 12;
+        else if (sub.billingCycle === 'WEEKLY') amount = amount * 4.345;
         return acc + amount;
     }, 0);
 
@@ -115,9 +133,88 @@ const SubscriptionList = () => {
     };
     const sortedList = [...subscriptions].sort((a, b) => normalizeToMonthly(b) - normalizeToMonthly(a));
 
+    // Calculate Unused (Feature Refinement: 7-day grace period for new subs)
+    const unusedCount = useMemo(() => {
+        const thirtyDaysAgo = new Date();
+        thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+
+        const sevenDaysAgo = new Date();
+        sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
+
+        return subscriptions.filter(sub => {
+            if (sub.name?.includes('SubDupes')) return false;
+            const subId = sub.id || sub._id;
+            const lastVisit = lastVisited[subId];
+
+            // Check if sub is "new" (added in last 7 days)
+            const createdAt = sub.createdAt || sub.detectedAt;
+            const isNew = createdAt ? new Date(createdAt) > sevenDaysAgo : false;
+
+            if (!lastVisit) {
+                return !isNew; // New subs without visits are NOT unused yet
+            }
+            return new Date(lastVisit) < thirtyDaysAgo;
+        }).length;
+    }, [subscriptions, lastVisited]);
+
+    // Budget Logic (Feature 9 Fix: Use USD normalization for budget check)
+    const monthlyBudget = user?.monthlyBudget || 500;
+    const isOverBudget = totalMonthlySpendNormalized > monthlyBudget;
+    const budgetUsagePercent = Math.min(100, Math.round((totalMonthlySpendNormalized / monthlyBudget) * 100));
+    const budgetCurrencySymbol = '$'; // Budget is always USD from server
+
+    // Category Stats (Feature 8)
+    const categoryStats = useMemo(() => {
+        const stats = {};
+        subscriptions.forEach(sub => {
+            const domain = getDomain(sub.websiteUrl);
+            const category = DOMAIN_CATEGORIES[domain] || 'Other';
+            const cost = normalizeToMonthly(sub);
+
+            if (!stats[category]) stats[category] = { spend: 0, count: 0 };
+            stats[category].spend += cost;
+            stats[category].count += 1;
+        });
+
+        return Object.entries(stats)
+            .sort((a, b) => b[1].spend - a[1].spend)
+            .map(([name, data]) => ({ name, ...data }));
+    }, [subscriptions]);
+
+    // CSV Export (Feature 8 Fix: Escaped fields)
+    const handleExport = () => {
+        const escapeCSV = (val) => {
+            let str = String(val || '').replace(/"/g, '""');
+            if (str.includes(',') || str.includes('\n') || str.includes('"')) {
+                return `"${str}"`;
+            }
+            return str;
+        };
+
+        const headers = ['Name', 'Amount', 'Currency', 'Billing Cycle', 'Website', 'Next Billing Date', 'Category'];
+        const rows = subscriptions.map(sub => [
+            escapeCSV(sub.name),
+            sub.amount,
+            sub.currency,
+            sub.billingCycle,
+            escapeCSV(sub.websiteUrl),
+            sub.nextBillingDate || '',
+            DOMAIN_CATEGORIES[getDomain(sub.websiteUrl)] || 'Other'
+        ]);
+
+        const csvContent = [headers, ...rows].map(e => e.join(',')).join('\n');
+        const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.setAttribute('href', url);
+        link.setAttribute('download', `subdupes_export_${new Date().toISOString().split('T')[0]}.csv`);
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+    };
+
     // Placeholders
-    const unusedCount = 0;
-    const potentialSavings = 0;
+    const potentialSavings = totalMonthlySpend * 0.15; // 15% estimated optimization potential
 
     return (
         <div className="flex flex-col h-full bg-slate-50 font-sans">
@@ -140,15 +237,7 @@ const SubscriptionList = () => {
                     </div>
                 </div>
 
-                {/* Profile / Actions */}
                 <div className="flex items-center gap-3">
-                    <button className="relative p-1 text-gray-400 hover:text-indigo-600 transition-colors">
-                        <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9" />
-                        </svg>
-                        {/* Dot */}
-                        <span className="absolute top-1 right-1 w-2 h-2 bg-red-500 rounded-full border border-white"></span>
-                    </button>
                     <div className="w-8 h-8 rounded-full bg-indigo-100 flex items-center justify-center text-indigo-700 font-bold border border-indigo-200">
                         {(user?.name || user?.email || 'U')[0].toUpperCase()}
                     </div>
@@ -161,6 +250,54 @@ const SubscriptionList = () => {
                 <p className="text-gray-500 text-xs mb-4 px-1">
                     SubDupes tracks your daily usage patterns and alerts you when you haven't used a subscriptions.
                 </p>
+
+                {/* --- Budget Alert --- */}
+                {isOverBudget && (
+                    <div className="mb-6 bg-red-50 border border-red-100 rounded-2xl p-4 flex items-center gap-4 animate-pulse">
+                        <div className="w-12 h-12 rounded-xl bg-red-100 flex items-center justify-center text-red-600 shrink-0">
+                            <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                            </svg>
+                        </div>
+                        <div>
+                            <h4 className="font-bold text-red-900 text-sm">Budget Exceeded!</h4>
+                            <p className="text-red-700 text-xs mt-0.5">
+                                You've spent {budgetCurrencySymbol}{totalMonthlySpendNormalized.toFixed(2)} this month (normalized),
+                                which is {budgetUsagePercent}% of your {budgetCurrencySymbol}{monthlyBudget} budget.
+                            </p>
+                        </div>
+                    </div>
+                )}
+
+                {/* --- Category Breakdown (Feature 8) --- */}
+                {categoryStats.length > 0 && (
+                    <div className="mb-6 bg-white p-5 rounded-3xl border border-slate-100 shadow-sm">
+                        <div className="flex items-center justify-between mb-4">
+                            <h4 className="text-xs font-bold text-slate-800 uppercase tracking-tight">Spend by Category</h4>
+                            <div className="flex gap-1">
+                                <span className="w-1.5 h-1.5 rounded-full bg-indigo-500"></span>
+                                <span className="w-1.5 h-1.5 rounded-full bg-indigo-300"></span>
+                                <span className="w-1.5 h-1.5 rounded-full bg-indigo-100"></span>
+                            </div>
+                        </div>
+                        <div className="space-y-4">
+                            {categoryStats.slice(0, 5).map(stat => (
+                                <div key={stat.name} className="space-y-1.5">
+                                    <div className="flex justify-between text-[11px] font-semibold text-slate-600">
+                                        <span>{stat.name}</span>
+                                        <span className="text-slate-900">{dominantCurrency.symbol}{stat.spend.toFixed(0)}</span>
+                                    </div>
+                                    <div className="h-2 w-full bg-slate-100 rounded-full overflow-hidden">
+                                        <div
+                                            className="h-full bg-gradient-to-r from-indigo-500 to-purple-500 rounded-full"
+                                            style={{ width: `${Math.max(4, (stat.spend / totalMonthlySpend) * 100)}%` }}
+                                        ></div>
+                                    </div>
+                                </div>
+                            ))}
+                        </div>
+                    </div>
+                )}
 
                 {/* --- Stats Grid --- */}
                 <div className="grid grid-cols-2 gap-3 mb-6">
@@ -222,6 +359,28 @@ const SubscriptionList = () => {
                             <span>Possible reduction</span>
                         </div>
                     </div>
+                </div>
+
+                {/* --- Quick Actions (Feature 7) --- */}
+                <div className="flex gap-3 mb-8">
+                    <button
+                        onClick={() => setView(VIEWS.ADD_DRAFT)}
+                        className="flex-1 flex items-center justify-center gap-2 py-3 bg-indigo-600 hover:bg-indigo-700 text-white rounded-2xl font-bold text-sm transition-all shadow-lg shadow-indigo-200"
+                    >
+                        <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+                        </svg>
+                        Add Subscription
+                    </button>
+                    <button
+                        onClick={handleExport}
+                        className="px-4 flex items-center justify-center bg-white border border-slate-200 hover:bg-slate-50 text-slate-600 rounded-2xl font-bold text-sm transition-all shadow-sm"
+                        title="Export to CSV"
+                    >
+                        <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a2 2 0 002 2h12a2 2 0 002-2v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+                        </svg>
+                    </button>
                 </div>
 
                 {/* --- List Section --- */}
