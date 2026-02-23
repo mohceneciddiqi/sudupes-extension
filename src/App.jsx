@@ -2,24 +2,26 @@ import { useState, useEffect } from 'react'
 import useStore from './store/useStore'
 import AddSubscriptionForm from './components/AddSubscriptionForm'
 import SubscriptionList from './components/SubscriptionList'
+import SyncConflictResolver from './components/SyncConflictResolver'
 import { api } from './services/api'
 import { config } from './config'
 
 import { VIEWS } from './constants'
 
 function App() {
-  const { view, setView, checkStorage, setUser } = useStore()
+  const {
+    view, setView, checkStorage, setUser,
+    pendingSubscriptions, syncConflicts, user
+  } = useStore()
   const [init, setInit] = useState(false)
 
   const handleSync = async () => {
-    // 1. Force Backend Sync
     try {
       chrome.runtime.sendMessage({ type: 'CMD_SYNC_NOW' });
     } catch (error) {
       console.error('Failed to send sync message:', error);
     }
 
-    // 2. Rescan Current Page
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
     if (tab?.id) {
       try {
@@ -30,17 +32,15 @@ function App() {
     }
   };
 
-  // Initial Auth Check (Run Once)
+  // Initial Auth Check
   useEffect(() => {
     const handleSyncInternal = async () => {
-      // 1. Force Backend Sync
       try {
         chrome.runtime.sendMessage({ type: 'CMD_SYNC_NOW' });
       } catch (error) {
         console.error('Failed to send sync message:', error);
       }
 
-      // 2. Rescan Current Page
       const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
       if (tab?.id) {
         try {
@@ -56,21 +56,27 @@ function App() {
       if (currentUser) {
         setUser(currentUser);
         const hasDraft = await checkStorage();
-        if (!hasDraft) {
+
+        // Check for sync conflicts first
+        const state = useStore.getState();
+        if (state.syncConflicts?.length > 0) {
+          setView(VIEWS.SYNC_CONFLICTS);
+        } else if (!hasDraft) {
           setView(VIEWS.DASHBOARD);
         }
       } else {
-        setView(VIEWS.AUTH);
+        // Not logged in — check if there are pending items or drafts
+        await checkStorage();
+        const state = useStore.getState();
+        if (state.draft) {
+          // Has a draft — show the form in offline mode
+          setView(VIEWS.ADD_DRAFT);
+        } else {
+          setView(VIEWS.AUTH);
+        }
       }
       setInit(true);
-      // Trigger scan once on load
       handleSyncInternal();
-      // Trigger background sync to ensure cache is fresh
-      try {
-        chrome.runtime.sendMessage({ type: 'CMD_SYNC_ON_CONNECT' });
-      } catch (error) {
-        console.error('Failed to send connect message:', error);
-      }
     };
     initApp();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -79,65 +85,126 @@ function App() {
   // Storage Listener
   useEffect(() => {
     const handleStorageChange = (changes, area) => {
-      // Check current user state directly to ensure fresh value without re-binding listener
       const currentUser = useStore.getState().user;
 
-      // Only update if we have a user (meaning we are in dashboard/authorized mode)
-      if (area === 'local' && currentUser) {
-        if (changes.detectedDraft) {
-          // Use getState to avoid stale closure
-          useStore.getState().checkStorage();
+      if (area === 'local') {
+        // Always listen for pending subscriptions changes (even when not logged in)
+        if (changes.pendingSubscriptions) {
+          useStore.getState().setPendingSubscriptions(changes.pendingSubscriptions.newValue || []);
         }
-        if (changes.subscriptions) {
-          // Instant update of subscription list
-          useStore.getState().setSubscriptions(changes.subscriptions.newValue || []);
+        if (changes.syncConflicts) {
+          const conflicts = changes.syncConflicts.newValue || [];
+          useStore.getState().setSyncConflicts(conflicts);
+          // Auto-navigate to conflicts view if new conflicts appear
+          if (conflicts.length > 0 && currentUser) {
+            useStore.getState().setView(VIEWS.SYNC_CONFLICTS);
+          }
+        }
+
+        if (currentUser) {
+          if (changes.detectedDraft) {
+            useStore.getState().checkStorage();
+          }
+          if (changes.subscriptions) {
+            useStore.getState().setSubscriptions(changes.subscriptions.newValue || []);
+          }
+        } else {
+          // Not logged in — still listen for drafts
+          if (changes.detectedDraft) {
+            useStore.getState().checkStorage();
+          }
         }
       }
     };
     chrome.storage.onChanged.addListener(handleStorageChange);
     return () => chrome.storage.onChanged.removeListener(handleStorageChange);
-  }, []); // Run once on mount - all dependencies accessed via getState()
+  }, []);
 
   if (!init) return <div className="flex items-center justify-center h-full">Loading...</div>
 
+  // ─── Auth View (Not Logged In, No Draft) ─────────────────────────────────
+
   if (view === VIEWS.AUTH) {
+    const hasPending = pendingSubscriptions.length > 0;
+
     return (
-      // ... auth UI
       <div className="flex flex-col items-center justify-center h-full p-6 bg-white text-center">
-        {/* ... svg and text ... */}
         <div className="w-12 h-12 bg-blue-100 rounded-full flex items-center justify-center mb-4">
           <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6 text-blue-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 16l-4-4m0 0l4-4m-4 4h14m-5 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h7a3 3 0 013 3v1" />
           </svg>
         </div>
-        <h2 className="text-xl font-bold text-gray-800 mb-2">Login Required</h2>
+        <h2 className="text-xl font-bold text-gray-800 mb-2">
+          {hasPending ? 'Subscriptions Saved!' : 'Login Required'}
+        </h2>
         <p className="text-sm text-gray-500 mb-6">
-          Please log in to your SubDupes account to sync your subscriptions.
+          {hasPending
+            ? `You have ${pendingSubscriptions.length} subscription${pendingSubscriptions.length !== 1 ? 's' : ''} saved locally. Log in to sync them.`
+            : 'Please log in to your SubDupes account to sync your subscriptions.'
+          }
         </p>
+
+        {/* Pending Subscriptions Preview */}
+        {hasPending && (
+          <div className="w-full mb-4 max-h-32 overflow-y-auto">
+            {pendingSubscriptions.map((sub, i) => (
+              <div key={sub.id || i} className="flex items-center justify-between bg-amber-50 rounded-lg px-3 py-2 mb-1 border border-amber-100">
+                <div className="text-left">
+                  <div className="text-xs font-semibold text-gray-700">{sub.name}</div>
+                  <div className="text-[10px] text-gray-400">{sub.websiteUrl}</div>
+                </div>
+                <div className="text-xs font-bold text-amber-600">
+                  {sub.currency === 'EUR' ? '€' : sub.currency === 'GBP' ? '£' : '$'}
+                  {parseFloat(sub.amount || 0).toFixed(2)}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+
         <button
           onClick={() => {
             chrome.tabs.create({ url: `${config.FRONTEND_URL}/login` });
           }}
-          className="w-full bg-blue-600 hover:bg-blue-700 text-white font-medium py-2 px-4 rounded-lg text-sm transition-colors mb-4"
+          className="w-full bg-blue-600 hover:bg-blue-700 text-white font-medium py-2 px-4 rounded-lg text-sm transition-colors mb-2"
         >
           Log In via Web App
         </button>
+
+        {/* Allow adding subscriptions offline */}
+        <button
+          onClick={() => setView(VIEWS.ADD_DRAFT)}
+          className="w-full bg-white border border-gray-200 hover:bg-gray-50 text-gray-600 font-medium py-2 px-4 rounded-lg text-sm transition-colors mb-4"
+        >
+          + Save a Subscription Locally
+        </button>
+
         <div className="text-xs text-gray-400">
-          After logging in, reopen this extension.
+          {hasPending ? 'Subscriptions will sync automatically after login.' : 'After logging in, reopen this extension.'}
         </div>
       </div>
     )
   }
 
+  // ─── Main Layout ─────────────────────────────────────────────────────────
+
+  const isLoggedIn = !!user;
+
   return (
     <div className="w-full h-full bg-gray-50 flex flex-col">
-      {/* ... header ... */}
+      {/* Header */}
       <header className="bg-white border-b border-gray-200 px-4 py-3 flex items-center justify-between shadow-sm sticky top-0 z-10">
         <div className="flex items-center gap-2">
           <div className="w-6 h-6 bg-blue-600 rounded-md flex items-center justify-center text-white font-bold text-xs">
             S
           </div>
           <h1 className="font-semibold text-gray-800">SubDupes</h1>
+          {/* Pending count indicator */}
+          {pendingSubscriptions.length > 0 && (
+            <span className="bg-amber-100 text-amber-700 text-[10px] font-bold px-1.5 py-0.5 rounded-full">
+              {pendingSubscriptions.length} pending
+            </span>
+          )}
         </div>
         <div className="flex gap-2">
           <button
@@ -192,12 +259,10 @@ function App() {
               <div onClick={async () => {
                 const query = 'subject:(receipt OR invoice OR subscription OR payment OR renewal) -from:me';
 
-                // Try to detect current Gmail account index
-                let accountIndex = '0'; // Default to first account
+                let accountIndex = '0';
                 try {
                   const tabs = await chrome.tabs.query({ url: 'https://mail.google.com/*' });
                   if (tabs.length > 0) {
-                    // Extract account index from existing Gmail tab
                     const match = tabs[0].url.match(/\/mail\/u\/(\d+)\//);
                     if (match) {
                       accountIndex = match[1];
@@ -225,17 +290,21 @@ function App() {
         )}
 
         {view === VIEWS.ADD_DRAFT && (
-          <AddSubscriptionForm />
+          <AddSubscriptionForm isOffline={!isLoggedIn} />
         )}
 
         {view === VIEWS.ALL_SUBSCRIPTIONS && (
           <SubscriptionList />
         )}
+
+        {view === VIEWS.SYNC_CONFLICTS && (
+          <SyncConflictResolver />
+        )}
       </main>
 
       {/* Footer */}
       <footer className="bg-white border-t border-gray-200 px-4 py-2 text-xs text-center text-gray-400">
-        Syncing with app.subdupes.com
+        {isLoggedIn ? 'Syncing with app.subdupes.com' : 'Not logged in — saving locally'}
       </footer>
     </div>
   )

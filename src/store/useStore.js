@@ -13,19 +13,14 @@ const useStore = create((set) => ({
     clearDraft: () => {
         set({ draft: null });
         if (typeof chrome !== 'undefined' && chrome.tabs) {
-            // Clear badge on ALL tabs, not just current window
-            chrome.tabs.query({}, (allTabs) => {
-                // Clear storage once
-                chrome.runtime.sendMessage({ type: 'CMD_DRAFT_CONSUMED' });
+            // Clear storage
+            chrome.runtime.sendMessage({ type: 'CMD_DRAFT_CONSUMED' });
 
-                // Clear badges on all tabs that might have draft indicator
-                allTabs.forEach(tab => {
-                    if (tab.id) {
-                        chrome.action.setBadgeText({ text: '', tabId: tab.id }).catch(() => {
-                            // Tab might have been closed, ignore error
-                        });
-                    }
-                });
+            // Only clear badge on the active tab to preserve ✔ badges on other tabs
+            chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+                if (tabs[0]?.id) {
+                    chrome.action.setBadgeText({ text: '', tabId: tabs[0].id }).catch(() => { });
+                }
             });
         }
     },
@@ -33,13 +28,59 @@ const useStore = create((set) => ({
     view: VIEWS.AUTH,
     setView: (view) => set({ view }),
 
+    // Pending subscriptions (offline saves)
+    pendingSubscriptions: [],
+    setPendingSubscriptions: (pendingSubscriptions) => set({ pendingSubscriptions }),
+    addPendingSubscription: (sub) => set((state) => {
+        const updated = [...state.pendingSubscriptions, sub];
+        // Persist to chrome.storage.local
+        if (typeof chrome !== 'undefined' && chrome.storage) {
+            chrome.storage.local.set({ pendingSubscriptions: updated });
+        }
+        return { pendingSubscriptions: updated };
+    }),
+    clearPendingSubscriptions: () => {
+        set({ pendingSubscriptions: [] });
+        if (typeof chrome !== 'undefined' && chrome.storage) {
+            chrome.storage.local.remove('pendingSubscriptions');
+        }
+    },
+
+    // Sync conflicts (duplicates found during login sync)
+    syncConflicts: [],
+    setSyncConflicts: (syncConflicts) => set({ syncConflicts }),
+    clearSyncConflicts: () => {
+        set({ syncConflicts: [] });
+        if (typeof chrome !== 'undefined' && chrome.storage) {
+            chrome.storage.local.remove('syncConflicts');
+        }
+    },
+    resolveConflict: (index) => set((state) => {
+        const updated = state.syncConflicts.filter((_, i) => i !== index);
+        if (typeof chrome !== 'undefined' && chrome.storage) {
+            chrome.storage.local.set({ syncConflicts: updated });
+        }
+        return { syncConflicts: updated };
+    }),
+
     // Hydrate from chrome.storage
     checkStorage: () => {
         return new Promise((resolve) => {
             if (typeof chrome !== 'undefined' && chrome.storage) {
-                chrome.storage.local.get(['detectedDraft', 'subscriptions'], (result) => {
+                chrome.storage.local.get([
+                    'detectedDraft',
+                    'subscriptions',
+                    'pendingSubscriptions',
+                    'syncConflicts'
+                ], (result) => {
                     if (result.subscriptions) {
                         set({ subscriptions: result.subscriptions });
+                    }
+                    if (result.pendingSubscriptions?.length > 0) {
+                        set({ pendingSubscriptions: result.pendingSubscriptions });
+                    }
+                    if (result.syncConflicts?.length > 0) {
+                        set({ syncConflicts: result.syncConflicts });
                     }
                     if (result.detectedDraft) {
                         set({ draft: result.detectedDraft, view: VIEWS.ADD_DRAFT })

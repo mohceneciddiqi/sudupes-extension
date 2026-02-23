@@ -15,33 +15,189 @@ function withTimeout(promise, timeoutMs = 10000) {
     ]);
 }
 
-// Sync on startup/alarm
+// ─── Sync Subscriptions ────────────────────────────────────────────────────
+
 async function syncSubscriptions() {
     try {
-        // Add 10 second timeout to API calls
         const [subs, profile] = await withTimeout(
             Promise.all([
                 api.getSubscriptions(),
                 api.getUserProfile()
             ]),
-            10000 // 10 second timeout
+            10000
         );
 
         subscriptionCache = subs;
 
-        // Batch save to storage
         await chrome.storage.local.set({
             subscriptions: subs,
             userProfile: profile
         });
 
         console.log('Synced:', { subs: subs.length, user: profile?.email });
+
+        // If user is authenticated and has pending subscriptions, sync them
+        if (profile?.email) {
+            await syncPendingSubscriptions();
+        }
     } catch (err) {
         console.warn('Sync failed (likely not logged in or timeout):', err?.message || err);
     }
 }
 
-// Initial sync
+// ─── Pending Subscriptions Sync (Offline → Server) ─────────────────────────
+
+async function syncPendingSubscriptions() {
+    const result = await chrome.storage.local.get(['pendingSubscriptions']);
+    const pending = result.pendingSubscriptions || [];
+
+    if (pending.length === 0) return { synced: 0, conflicts: [] };
+
+    console.log(`Syncing ${pending.length} pending subscription(s)...`);
+
+    // Hydrate subscription cache if empty
+    if (!subscriptionCache.length) {
+        const cached = await chrome.storage.local.get(['subscriptions']);
+        if (cached.subscriptions) subscriptionCache = cached.subscriptions;
+    }
+
+    const synced = [];
+    const conflicts = [];
+    const failed = [];
+
+    for (const pendingSub of pending) {
+        // Check for duplicates against existing subscriptions
+        const duplicate = findDuplicate(pendingSub, subscriptionCache);
+
+        if (duplicate) {
+            conflicts.push({
+                pending: pendingSub,
+                existing: duplicate,
+                resolvedAction: null // Will be set by user
+            });
+        } else {
+            // No duplicate — try to create via API
+            try {
+                const created = await api.createSubscription({
+                    name: pendingSub.name,
+                    amount: parseFloat(pendingSub.amount) || 0,
+                    currency: pendingSub.currency || 'USD',
+                    billingCycle: pendingSub.billingCycle || 'MONTHLY',
+                    websiteUrl: pendingSub.websiteUrl || '',
+                    nextBillingDate: calculateNextDate(pendingSub.billingCycle || 'MONTHLY'),
+                    notes: pendingSub.planName ? `Plan: ${pendingSub.planName}` : '',
+                    source: pendingSub.source || 'OFFLINE_SAVE'
+                });
+
+                synced.push(created);
+                // Add to cache so subsequent checks see it
+                subscriptionCache.push(created);
+            } catch (err) {
+                console.error('Failed to sync pending subscription:', pendingSub.name, err);
+                failed.push(pendingSub);
+            }
+        }
+    }
+
+    // Update storage
+    if (failed.length > 0) {
+        // Keep only failed ones in pending
+        await chrome.storage.local.set({ pendingSubscriptions: failed });
+    } else {
+        await chrome.storage.local.remove('pendingSubscriptions');
+    }
+
+    if (conflicts.length > 0) {
+        await chrome.storage.local.set({ syncConflicts: conflicts });
+        console.log(`Found ${conflicts.length} conflict(s) to resolve.`);
+    }
+
+    if (synced.length > 0) {
+        // Refresh subscription cache from server
+        try {
+            const freshSubs = await api.getSubscriptions();
+            subscriptionCache = freshSubs;
+            await chrome.storage.local.set({ subscriptions: freshSubs });
+        } catch { /* Non-critical */ }
+    }
+
+    console.log('Pending sync complete:', { synced: synced.length, conflicts: conflicts.length, failed: failed.length });
+    return { synced: synced.length, conflicts };
+}
+
+// ─── Duplicate Detection ───────────────────────────────────────────────────
+
+function findDuplicate(pendingSub, existingList) {
+    const normalizeHost = (url) => {
+        if (!url) return '';
+        try {
+            let safeUrl = url.trim();
+            if (!safeUrl.startsWith('http')) safeUrl = 'https://' + safeUrl;
+            return new URL(safeUrl).hostname.toLowerCase().replace(/^www\./, '');
+        } catch { return ''; }
+    };
+
+    const pendingHost = normalizeHost(pendingSub.websiteUrl);
+    const pendingAmount = parseFloat(pendingSub.amount) || 0;
+    const pendingName = (pendingSub.name || '').toLowerCase().trim();
+
+    for (const existing of existingList) {
+        const existingHost = normalizeHost(existing.websiteUrl);
+        const existingAmount = parseFloat(existing.amount) || 0;
+        const existingName = (existing.name || '').toLowerCase().trim();
+
+        // Match 1: Same host AND similar amount (within 10%)
+        if (pendingHost && existingHost && pendingHost === existingHost) {
+            if (pendingAmount === 0 || existingAmount === 0) {
+                return existing; // Can't compare amounts, but host matches
+            }
+            const diff = Math.abs(pendingAmount - existingAmount);
+            const threshold = Math.max(pendingAmount, existingAmount) * 0.1;
+            if (diff <= threshold) {
+                return existing;
+            }
+        }
+
+        // Match 2: Same name AND same host
+        if (pendingName && existingName && pendingName === existingName && pendingHost === existingHost) {
+            return existing;
+        }
+
+        // Match 3: Same name AND similar amount (no host match but clear duplicate)
+        if (pendingName && existingName && pendingName === existingName) {
+            if (pendingAmount > 0 && existingAmount > 0) {
+                const diff = Math.abs(pendingAmount - existingAmount);
+                const threshold = Math.max(pendingAmount, existingAmount) * 0.1;
+                if (diff <= threshold) {
+                    return existing;
+                }
+            }
+        }
+    }
+
+    return null;
+}
+
+// ─── Helpers ───────────────────────────────────────────────────────────────
+
+function calculateNextDate(cycle) {
+    const now = new Date();
+    const next = new Date(now);
+    if (cycle === 'WEEKLY') {
+        next.setDate(now.getDate() + 7);
+    } else if (cycle === 'YEARLY') {
+        next.setFullYear(now.getFullYear() + 1);
+    } else {
+        const d = next.getDate();
+        next.setMonth(next.getMonth() + 1);
+        if (next.getDate() !== d) next.setDate(0);
+    }
+    next.setHours(12, 0, 0, 0);
+    return next.toISOString();
+}
+
+// ─── Lifecycle Events ──────────────────────────────────────────────────────
+
 chrome.runtime.onStartup.addListener(syncSubscriptions);
 
 chrome.runtime.onInstalled.addListener(() => {
@@ -56,27 +212,22 @@ chrome.runtime.onInstalled.addListener(() => {
         });
     });
 
-    // Ensure alarm exists (onInstalled is a good place for this)
     chrome.alarms.create('dailySync', { periodInMinutes: 1440 });
 });
-
-// If you also want it recreated when SW wakes without install, keep it here too,
-// but it is not required.
-// chrome.alarms.create('dailySync', { periodInMinutes: 1440 });
 
 chrome.alarms.onAlarm.addListener((alarm) => {
     if (alarm.name === 'dailySync') syncSubscriptions();
 });
 
-// Handle Context Menu Click
+// ─── Context Menu ──────────────────────────────────────────────────────────
+
 chrome.contextMenus.onClicked.addListener((info, tab) => {
     if (info.menuItemId !== 'save-to-subdupes') return;
     if (!tab?.id) return;
 
-    // Validate URL - only allow HTTP(S) URLs
+    // Validate URL
     let validUrl = tab.url;
     if (!tab.url || (!tab.url.startsWith('http://') && !tab.url.startsWith('https://'))) {
-        // For non-HTTP URLs, show error
         chrome.scripting.executeScript({
             target: { tabId: tab.id },
             func: () => alert('Cannot save from this page. Please use on regular web pages.')
@@ -91,23 +242,19 @@ chrome.contextMenus.onClicked.addListener((info, tab) => {
         source: 'CONTEXT_MENU'
     };
 
-    // Check for existing draft before overwriting
     chrome.storage.local.get(['detectedDraft'], (result) => {
         if (result.detectedDraft) {
-            // Existing draft found - ask user before overwriting
             chrome.scripting.executeScript({
                 target: { tabId: tab.id },
                 func: () => confirm('A draft already exists. Replace it with this selection?')
             }, (results) => {
                 if (results && results[0] && results[0].result === true) {
-                    // User confirmed - save the new draft
                     saveDraft(draft, tab.id);
                 } else {
                     console.log('User cancelled draft replacement');
                 }
             });
         } else {
-            // No existing draft - save directly
             saveDraft(draft, tab.id);
         }
     });
@@ -123,19 +270,18 @@ chrome.contextMenus.onClicked.addListener((info, tab) => {
                 return;
             }
 
-            // Notify user visually
             chrome.scripting.executeScript({
                 target: { tabId: tabId },
                 func: () => alert('Selection saved to SubDupes draft! Open extension to review.')
             });
 
-            // Set badge
             chrome.action.setBadgeText({ text: '!', tabId: tabId });
         });
     }
 });
 
-// URL Watcher for Price Hike / Already Subscribed Check
+// ─── URL Watcher for Price Hike / Already Subscribed Check ─────────────────
+
 chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
     if (changeInfo.status === 'complete' && tab?.url) {
         checkUrlMatch(tabId, tab.url);
@@ -143,7 +289,6 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
 });
 
 async function checkUrlMatch(tabId, url) {
-    // Hydrate if empty (Service Worker woke up)
     if (!subscriptionCache.length) {
         const result = await chrome.storage.local.get(['subscriptions']);
         if (result.subscriptions) subscriptionCache = result.subscriptions;
@@ -151,9 +296,7 @@ async function checkUrlMatch(tabId, url) {
 
     if (!subscriptionCache.length) return;
 
-    // Filter out non-HTTP(S) URLs early
     if (!url || !url.startsWith('http://') && !url.startsWith('https://')) {
-        // Clear badge for chrome://, about:, file://, data:, etc.
         chrome.action.setBadgeText({ text: '', tabId });
         return;
     }
@@ -162,7 +305,6 @@ async function checkUrlMatch(tabId, url) {
         const urlObj = new URL(url);
         const currentHost = urlObj.hostname.toLowerCase().replace(/^www\./, '');
 
-        // Skip localhost and internal IPs
         if (currentHost === 'localhost' || currentHost.startsWith('127.') || currentHost.startsWith('192.168.') || currentHost.startsWith('10.')) {
             chrome.action.setBadgeText({ text: '', tabId });
             return;
@@ -172,15 +314,10 @@ async function checkUrlMatch(tabId, url) {
             if (!sub.websiteUrl) return false;
 
             try {
-                // Robust normalization: Handle "figma.com/pricing", "http://figma.com", etc.
                 let normalizedUrl = sub.websiteUrl.trim();
-
-                // Skip invalid or non-HTTP URLs in stored subscriptions
                 if (!normalizedUrl || normalizedUrl.startsWith('chrome://') || normalizedUrl.startsWith('about:') || normalizedUrl.startsWith('file://')) {
                     return false;
                 }
-
-                // If it looks like a domain without protocol, prepend it
                 if (!normalizedUrl.startsWith('http')) {
                     normalizedUrl = 'https://' + normalizedUrl;
                 }
@@ -188,13 +325,8 @@ async function checkUrlMatch(tabId, url) {
                 const subUrlObj = new URL(normalizedUrl);
                 const subHost = subUrlObj.hostname.toLowerCase().replace(/^www\./, '');
 
-                // 1. Exact Host Match
                 if (currentHost === subHost) return true;
-
-                // 2. Subdomain Match (e.g. app.figma.com matches figma.com)
                 if (currentHost.endsWith('.' + subHost)) return true;
-
-                // 3. Reverse Subdomain (e.g. figma.com matches www.figma.com if stored incorrectly)
                 if (subHost.endsWith('.' + currentHost)) return true;
 
                 return false;
@@ -208,17 +340,16 @@ async function checkUrlMatch(tabId, url) {
             chrome.action.setBadgeText({ text: '✔', tabId });
             chrome.action.setBadgeBackgroundColor({ color: '#10B981', tabId });
         } else {
-            // Clear badge if no match (fix for persistent badge on navigation)
             chrome.action.setBadgeText({ text: '', tabId });
         }
     } catch (error) {
-        // Invalid URL - clear badge
         console.warn('Invalid URL in checkUrlMatch:', url, error);
         chrome.action.setBadgeText({ text: '', tabId });
     }
 }
 
-// IMPORTANT: Message listener must be registered once at top level
+// ─── Message Handler ───────────────────────────────────────────────────────
+
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (message?.type === 'GET_USER_BCC') {
         chrome.storage.local.get(['userProfile'], (result) => {
@@ -230,7 +361,6 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (message?.type === 'SUBSCRIPTION_DETECTED') {
         console.log('Background received subscription:', message.data);
 
-        // Standardize Data: Ensure amount is a number for consistent storage
         const cleanDraft = {
             ...message.data,
             amount: parseFloat(message.data.amount) || null
@@ -249,8 +379,71 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
                 chrome.action.setBadgeBackgroundColor({ color: '#2563EB', tabId: sender.tab.id });
             }
         });
+        return;
+    }
 
-        return; // no sendResponse needed
+    // Proactive prompt: relay to content script to show the toast
+    if (message?.type === 'SUBSCRIPTION_PROMPT_READY') {
+        if (sender?.tab?.id) {
+            // Check if domain is dismissed
+            chrome.storage.local.get(['dismissedDomains'], (result) => {
+                const dismissed = result.dismissedDomains || [];
+                try {
+                    const host = new URL(message.data.websiteUrl || '').hostname;
+                    if (dismissed.includes(host)) return;
+                } catch { /* Continue */ }
+
+                // Relay to contentscript (subscriptionPrompt.js)
+                chrome.tabs.sendMessage(sender.tab.id, {
+                    type: 'SHOW_SUBSCRIPTION_PROMPT',
+                    data: message.data
+                }).catch(() => {
+                    // Content script not ready — ignore
+                });
+            });
+        }
+        return;
+    }
+
+    // Save from proactive prompt (could be offline or online)
+    if (message?.type === 'SAVE_FROM_PROMPT') {
+        handlePromptSave(message.data, sender?.tab?.id);
+        return;
+    }
+
+    // Explicit offline save from popup
+    if (message?.type === 'SAVE_OFFLINE') {
+        savePendingSubscription(message.data, sender?.tab?.id);
+        sendResponse({ success: true });
+        return;
+    }
+
+    // Sync pending subscriptions manually
+    if (message?.type === 'SYNC_PENDING') {
+        syncPendingSubscriptions().then((result) => {
+            sendResponse(result);
+        }).catch((err) => {
+            sendResponse({ error: err.message });
+        });
+        return true; // async
+    }
+
+    // Get pending count
+    if (message?.type === 'GET_PENDING_COUNT') {
+        chrome.storage.local.get(['pendingSubscriptions'], (result) => {
+            sendResponse({ count: (result.pendingSubscriptions || []).length });
+        });
+        return true;
+    }
+
+    // Conflict resolution actions
+    if (message?.type === 'RESOLVE_CONFLICT') {
+        handleConflictResolution(message.data).then((result) => {
+            sendResponse(result);
+        }).catch((err) => {
+            sendResponse({ error: err.message });
+        });
+        return true;
     }
 
     if (message?.type === 'CMD_SYNC_NOW' || message?.type === 'CMD_SYNC_ON_CONNECT') {
@@ -259,10 +452,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     }
 
     if (message?.type === 'CMD_DRAFT_CONSUMED') {
-        // 1. Clear Storage
         chrome.storage.local.remove('detectedDraft');
-
-        // 2. Clear Badge (if tabId provided)
         if (message.tabId) {
             chrome.action.setBadgeText({ text: '', tabId: message.tabId });
         }
@@ -276,3 +466,140 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         return;
     }
 });
+
+// ─── Prompt Save Handler ───────────────────────────────────────────────────
+
+async function handlePromptSave(data, tabId) {
+    // Try to save via API first (if user is logged in)
+    try {
+        const token = await getAuthTokenQuick();
+        if (token) {
+            // User is logged in — create subscription directly via API
+            try {
+                await api.createSubscription({
+                    name: data.name || 'Unknown',
+                    amount: parseFloat(data.amount) || 0,
+                    currency: data.currency || 'USD',
+                    billingCycle: data.billingCycle || 'MONTHLY',
+                    websiteUrl: data.websiteUrl || '',
+                    nextBillingDate: calculateNextDate(data.billingCycle || 'MONTHLY'),
+                    notes: data.planName ? `Plan: ${data.planName}` : '',
+                    source: data.source || 'PROACTIVE_PROMPT'
+                });
+
+                // Refresh cache after successful save
+                try {
+                    const freshSubs = await api.getSubscriptions();
+                    subscriptionCache = freshSubs;
+                    await chrome.storage.local.set({ subscriptions: freshSubs });
+                } catch { /* Non-critical */ }
+
+                if (tabId) {
+                    chrome.action.setBadgeText({ text: '\u2714', tabId });
+                    chrome.action.setBadgeBackgroundColor({ color: '#10B981', tabId });
+                }
+                return;
+            } catch (apiErr) {
+                console.error('API save failed, falling back to draft:', apiErr);
+                // Fall through to draft save as fallback
+                const cleanDraft = { ...data, amount: parseFloat(data.amount) || null };
+                chrome.storage.local.set({ detectedDraft: cleanDraft });
+                if (tabId) {
+                    chrome.action.setBadgeText({ text: '!', tabId });
+                    chrome.action.setBadgeBackgroundColor({ color: '#F59E0B', tabId });
+                }
+                return;
+            }
+        }
+    } catch { /* Not logged in */ }
+
+    // User not logged in — save offline
+    savePendingSubscription(data, tabId);
+}
+
+async function getAuthTokenQuick() {
+    return new Promise((resolve) => {
+        try {
+            const configUrl = 'https://app.subdupes.com'; // Production cookie URL
+            chrome.cookies.getAll({ url: configUrl }, (cookies) => {
+                if (chrome.runtime.lastError) { resolve(null); return; }
+                const sessionCookie = cookies?.find(c => c.name === 'session_token');
+                resolve(sessionCookie?.value || null);
+            });
+        } catch { resolve(null); }
+    });
+}
+
+function savePendingSubscription(data, tabId) {
+    chrome.storage.local.get(['pendingSubscriptions'], (result) => {
+        const pending = result.pendingSubscriptions || [];
+
+        const newEntry = {
+            id: `pending_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+            name: data.name || 'Unknown',
+            planName: data.planName || '',
+            amount: parseFloat(data.amount) || 0,
+            currency: data.currency || 'USD',
+            billingCycle: data.billingCycle || 'MONTHLY',
+            websiteUrl: data.websiteUrl || '',
+            source: data.source || 'OFFLINE_SAVE',
+            savedAt: new Date().toISOString()
+        };
+
+        pending.push(newEntry);
+
+        chrome.storage.local.set({ pendingSubscriptions: pending }, () => {
+            if (chrome.runtime.lastError) {
+                console.error('Failed to save pending subscription:', chrome.runtime.lastError);
+                return;
+            }
+            console.log('Saved pending subscription:', newEntry.name);
+
+            if (tabId) {
+                chrome.action.setBadgeText({ text: `${pending.length}`, tabId });
+                chrome.action.setBadgeBackgroundColor({ color: '#F59E0B', tabId });
+            }
+        });
+    });
+}
+
+// ─── Conflict Resolution ───────────────────────────────────────────────────
+
+async function handleConflictResolution({ action, pending, existing }) {
+    if (action === 'keep_existing') {
+        // Discard the pending item — nothing to do on server
+        return { success: true };
+    }
+
+    if (action === 'keep_both') {
+        // Create the pending as a new subscription
+        const created = await api.createSubscription({
+            name: pending.name,
+            amount: parseFloat(pending.amount) || 0,
+            currency: pending.currency || 'USD',
+            billingCycle: pending.billingCycle || 'MONTHLY',
+            websiteUrl: pending.websiteUrl || '',
+            nextBillingDate: calculateNextDate(pending.billingCycle || 'MONTHLY'),
+            notes: pending.planName ? `Plan: ${pending.planName}` : ''
+        });
+        return { success: true, created };
+    }
+
+    if (action === 'merge') {
+        // Update the existing subscription with pending data (where pending has better data)
+        // For now, save as draft for user to review in the popup
+        const mergedDraft = {
+            name: pending.name || existing.name,
+            amount: parseFloat(pending.amount) || parseFloat(existing.amount) || 0,
+            currency: pending.currency || existing.currency || 'USD',
+            billingCycle: pending.billingCycle || existing.billingCycle || 'MONTHLY',
+            websiteUrl: pending.websiteUrl || existing.websiteUrl || '',
+            source: 'MERGE_RESOLUTION'
+        };
+
+        await chrome.storage.local.set({ detectedDraft: mergedDraft });
+        return { success: true, merged: true };
+    }
+
+    return { success: false, error: 'Unknown action' };
+}

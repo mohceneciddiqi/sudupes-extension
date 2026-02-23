@@ -1,5 +1,5 @@
 import useStore from '../store/useStore'
-import React, { useState } from 'react'
+import React, { useState, useMemo } from 'react'
 import { VIEWS } from '../constants'
 
 // --- Sub-Component for individual items to handle Image Error State ---
@@ -71,7 +71,7 @@ const SubscriptionItem = ({ sub }) => {
 };
 
 const SubscriptionList = () => {
-    const { subscriptions, setView } = useStore()
+    const { subscriptions, setView, user } = useStore()
 
     // --- Calculations ---
 
@@ -92,15 +92,32 @@ const SubscriptionList = () => {
         return acc + amount;
     }, 0);
 
-    // 3. Unused (Placeholder for now)
+    // Determine dominant currency from subscriptions
+    const dominantCurrency = useMemo(() => {
+        const currencySymbols = { USD: '$', EUR: '€', GBP: '£', INR: '₹', JPY: '¥', PKR: 'Rs', AED: 'AED', SAR: 'SAR', BRL: 'R$', TRY: '₺', AUD: 'A$', CAD: 'C$' };
+        const counts = {};
+        subscriptions.forEach(s => {
+            if (s.name?.includes('SubDupes')) return;
+            const c = s.currency || 'USD';
+            counts[c] = (counts[c] || 0) + 1;
+        });
+        const top = Object.entries(counts).sort((a, b) => b[1] - a[1])[0];
+        const code = top ? top[0] : 'USD';
+        return { code, symbol: currencySymbols[code] || code };
+    }, [subscriptions]);
+
+    // Sort by normalized monthly cost descending
+    const normalizeToMonthly = (sub) => {
+        let amount = Number(sub.amount || 0);
+        if (sub.billingCycle === 'YEARLY') amount = amount / 12;
+        else if (sub.billingCycle === 'WEEKLY') amount = amount * 4.345;
+        return amount;
+    };
+    const sortedList = [...subscriptions].sort((a, b) => normalizeToMonthly(b) - normalizeToMonthly(a));
+
+    // Placeholders
     const unusedCount = 0;
-
-    // 4. Potential Savings (Placeholder or % of total)
     const potentialSavings = 0;
-
-
-    // Sort by cost descending for impact
-    const sortedList = [...subscriptions].sort((a, b) => Number(b.amount || 0) - Number(a.amount || 0));
 
     return (
         <div className="flex flex-col h-full bg-slate-50 font-sans">
@@ -108,7 +125,7 @@ const SubscriptionList = () => {
             <div className="px-5 py-4 flex items-center justify-between bg-white sticky top-0 z-20 shadow-sm border-b border-gray-100">
                 <div className="flex items-center gap-2">
                     <button
-                        onClick={() => setView('dashboard')}
+                        onClick={() => setView(VIEWS.DASHBOARD)}
                         className="p-1 -ml-2 text-gray-400 hover:text-gray-600 transition-colors"
                     >
                         <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -133,7 +150,7 @@ const SubscriptionList = () => {
                         <span className="absolute top-1 right-1 w-2 h-2 bg-red-500 rounded-full border border-white"></span>
                     </button>
                     <div className="w-8 h-8 rounded-full bg-indigo-100 flex items-center justify-center text-indigo-700 font-bold border border-indigo-200">
-                        M
+                        {(user?.name || user?.email || 'U')[0].toUpperCase()}
                     </div>
                 </div>
             </div>
@@ -186,7 +203,7 @@ const SubscriptionList = () => {
                             </svg>
                         </div>
                         <p className="text-[10px] font-medium opacity-80 uppercase tracking-wider mb-1">Monthly Spend</p>
-                        <h3 className="text-3xl font-bold">${totalMonthlySpend.toFixed(2)}</h3>
+                        <h3 className="text-3xl font-bold">{dominantCurrency.symbol}{totalMonthlySpend.toFixed(2)}</h3>
                         <div className="flex items-center gap-1 mt-2 text-[10px] bg-white/20 w-fit px-1.5 py-0.5 rounded">
                             <span>Est. Total</span>
                         </div>
@@ -200,7 +217,7 @@ const SubscriptionList = () => {
                             </svg>
                         </div>
                         <p className="text-[10px] font-medium opacity-80 uppercase tracking-wider mb-1">Savings Potential</p>
-                        <h3 className="text-3xl font-bold">${potentialSavings.toFixed(2)}</h3>
+                        <h3 className="text-3xl font-bold">{dominantCurrency.symbol}{potentialSavings.toFixed(2)}</h3>
                         <div className="flex items-center gap-1 mt-2 text-[10px] bg-white/20 w-fit px-1.5 py-0.5 rounded">
                             <span>Possible reduction</span>
                         </div>

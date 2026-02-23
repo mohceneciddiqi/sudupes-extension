@@ -21,10 +21,7 @@
     ],
     "host_permissions": [
         "https://app.subdupes.com/*",
-        "http://localhost:5173/*",
-        "http://localhost:5175/*",
-        "http://localhost:3000/*",
-        "http://localhost:5000/*",
+        "https://backend.subdupes.com/*",
         "<all_urls>"
     ],
     "icons": {
@@ -35,7 +32,8 @@
     "content_scripts": [
         {
             "js": [
-                "src/content/observer.js"
+                "src/content/observer.js",
+                "src/content/subscriptionPrompt.js"
             ],
             "matches": [
                 "<all_urls>"

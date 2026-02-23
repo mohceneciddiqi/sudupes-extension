@@ -3,4 +3,5 @@ export const VIEWS = {
     DASHBOARD: 'dashboard',
     ADD_DRAFT: 'add-draft',
     ALL_SUBSCRIPTIONS: 'all-subscriptions',
+    SYNC_CONFLICTS: 'sync-conflicts',
 };

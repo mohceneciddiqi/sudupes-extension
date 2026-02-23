@@ -3,10 +3,9 @@ import useStore from '../store/useStore'
 import { api } from '../services/api'
 import { VIEWS } from '../constants'
 
-const AddSubscriptionForm = () => {
-    const { draft, updateDraft, clearDraft, setView } = useStore()
+const AddSubscriptionForm = ({ isOffline = false }) => {
+    const { draft, updateDraft, clearDraft, setView, addPendingSubscription } = useStore()
 
-    // Local state for form if no draft exists, or init from draft
     const [formData, setFormData] = useState({
         name: draft?.name || '',
         amount: draft?.amount || '',
@@ -16,7 +15,8 @@ const AddSubscriptionForm = () => {
         trialEndDate: draft?.trialEndDate || ''
     })
 
-    // Validation helper - centralized to keep consistency
+    const [saving, setSaving] = useState(false)
+
     const isValidAmount = (amount) => {
         if (!amount || amount === '') return false;
         const parsed = parseFloat(amount);
@@ -26,7 +26,6 @@ const AddSubscriptionForm = () => {
     const handleChange = (e) => {
         const { name, value } = e.target
         setFormData(prev => ({ ...prev, [name]: value }))
-        // Also update global draft state if needed
         if (draft) {
             updateDraft({ [name]: value })
         }
@@ -34,6 +33,7 @@ const AddSubscriptionForm = () => {
 
     const handleSubmit = async (e) => {
         e.preventDefault()
+        setSaving(true)
 
         try {
             // URL Normalization
@@ -42,75 +42,97 @@ const AddSubscriptionForm = () => {
                 cleanUrl = 'https://' + cleanUrl;
             }
 
-            // Better Date Logic
-            const calculateNextDate = (cycle) => {
-                const now = new Date();
-                const next = new Date(now);
-                if (cycle === 'WEEKLY') {
-                    next.setDate(now.getDate() + 7);
-                } else if (cycle === 'YEARLY') {
-                    next.setFullYear(now.getFullYear() + 1);
-                } else {
-                    // Smart Month Increment: Handle end-of-month (e.g., Jan 31 -> Feb 28/29)
-                    const d = next.getDate();
-                    next.setMonth(next.getMonth() + 1);
-                    // If date changed (e.g., Jan 31 became Mar 3), roll back to last day of target month
-                    if (next.getDate() !== d) {
-                        next.setDate(0); // Sets to last day of the previous month (which is the target month)
-                    }
-                }
-                // Set to Noon to avoid timezone flipping (off-by-one errors)
-                next.setHours(12, 0, 0, 0);
-                return next.toISOString();
-            };
-
-            let nextBillingDate;
-            if (formData.trialEndDate) {
-                const trialDate = new Date(formData.trialEndDate);
-                if (isNaN(trialDate.getTime())) {
-                    // Fallback or Alert
-                    // Since there is no input to fix it, we ignore the invalid trial date
-                    // and calculate based on cycle, but warn the user.
-                    console.warn("Invalid trialEndDate in draft, ignoring.");
-                    nextBillingDate = calculateNextDate(formData.billingCycle);
-                } else {
-                    nextBillingDate = trialDate.toISOString();
-                }
-            } else {
-                nextBillingDate = calculateNextDate(formData.billingCycle);
-            }
-
             const parsedAmount = parseFloat(formData.amount);
             if (isNaN(parsedAmount) || parsedAmount <= 0) {
                 alert("Please enter a valid amount greater than 0");
+                setSaving(false);
                 return;
             }
 
-            await api.createSubscription({
-                ...formData,
-                websiteUrl: cleanUrl, // Use normalized URL instead of formData.websiteUrl
-                amount: parsedAmount,
-                nextBillingDate: nextBillingDate,
-            });
+            if (isOffline) {
+                // Save to local storage (offline mode)
+                const offlineData = {
+                    name: formData.name,
+                    amount: parsedAmount,
+                    currency: formData.currency,
+                    billingCycle: formData.billingCycle,
+                    websiteUrl: cleanUrl,
+                    source: 'OFFLINE_FORM',
+                    planName: draft?.planName || ''
+                };
 
-            alert('Subscription Saved to SubDupes!');
-            clearDraft()
-            setView(VIEWS.DASHBOARD)
-            // Trigger a sync to update the list immediately
-            try {
-                chrome.runtime.sendMessage({ type: 'CMD_SYNC_NOW' });
-            } catch (error) {
-                console.error('Failed to trigger sync:', error);
+                // Save via service worker (single source of truth for storage)
+                // The store will be updated via the storage change listener in App.jsx
+                try {
+                    chrome.runtime.sendMessage({
+                        type: 'SAVE_OFFLINE',
+                        data: offlineData
+                    });
+                } catch (error) {
+                    console.error('Failed to send offline save message:', error);
+                }
+
+                clearDraft();
+                setView(VIEWS.DASHBOARD);
+            } else {
+                // Online mode — save via API
+                const calculateNextDate = (cycle) => {
+                    const now = new Date();
+                    const next = new Date(now);
+                    if (cycle === 'WEEKLY') {
+                        next.setDate(now.getDate() + 7);
+                    } else if (cycle === 'YEARLY') {
+                        next.setFullYear(now.getFullYear() + 1);
+                    } else {
+                        const d = next.getDate();
+                        next.setMonth(next.getMonth() + 1);
+                        if (next.getDate() !== d) {
+                            next.setDate(0);
+                        }
+                    }
+                    next.setHours(12, 0, 0, 0);
+                    return next.toISOString();
+                };
+
+                let nextBillingDate;
+                if (formData.trialEndDate) {
+                    const trialDate = new Date(formData.trialEndDate);
+                    if (isNaN(trialDate.getTime())) {
+                        console.warn("Invalid trialEndDate in draft, ignoring.");
+                        nextBillingDate = calculateNextDate(formData.billingCycle);
+                    } else {
+                        nextBillingDate = trialDate.toISOString();
+                    }
+                } else {
+                    nextBillingDate = calculateNextDate(formData.billingCycle);
+                }
+
+                await api.createSubscription({
+                    ...formData,
+                    websiteUrl: cleanUrl,
+                    amount: parsedAmount,
+                    nextBillingDate: nextBillingDate,
+                });
+
+                alert('Subscription Saved to SubDupes!');
+                clearDraft();
+                setView(VIEWS.DASHBOARD);
+                try {
+                    chrome.runtime.sendMessage({ type: 'CMD_SYNC_NOW' });
+                } catch (error) {
+                    console.error('Failed to trigger sync:', error);
+                }
             }
-
         } catch (err) {
             alert('Error saving: ' + err.message);
+        } finally {
+            setSaving(false);
         }
     }
 
     const handleDiscard = async () => {
         clearDraft();
-        setView(VIEWS.DASHBOARD);
+        setView(isOffline ? VIEWS.AUTH : VIEWS.DASHBOARD);
     };
 
     return (
@@ -126,8 +148,20 @@ const AddSubscriptionForm = () => {
                 </button>
             </div>
 
+            {/* Offline Mode Banner */}
+            {isOffline && (
+                <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 mb-4 flex items-start gap-2">
+                    <span className="text-amber-500 text-sm mt-0.5">💾</span>
+                    <div>
+                        <div className="text-xs font-semibold text-amber-800">Saving Locally</div>
+                        <div className="text-[10px] text-amber-600 mt-0.5">
+                            This subscription will be synced to your account when you log in.
+                        </div>
+                    </div>
+                </div>
+            )}
+
             <form onSubmit={handleSubmit} className="space-y-3">
-                {/* ... fields ... */}
                 <div>
                     <label className="block text-xs font-medium text-gray-500 mb-1">Service Name</label>
                     <input
@@ -166,6 +200,16 @@ const AddSubscriptionForm = () => {
                             <option value="USD">USD ($)</option>
                             <option value="EUR">EUR (€)</option>
                             <option value="GBP">GBP (£)</option>
+                            <option value="PKR">PKR (₨)</option>
+                            <option value="INR">INR (₹)</option>
+                            <option value="AED">AED</option>
+                            <option value="SAR">SAR</option>
+                            <option value="BDT">BDT</option>
+                            <option value="BRL">BRL (R$)</option>
+                            <option value="TRY">TRY (₺)</option>
+                            <option value="AUD">AUD</option>
+                            <option value="CAD">CAD</option>
+                            <option value="JPY">JPY (¥)</option>
                         </select>
                     </div>
                 </div>
@@ -184,16 +228,18 @@ const AddSubscriptionForm = () => {
                     </select>
                 </div>
 
-                <div>
-                    <label className="block text-xs font-medium text-gray-500 mb-1">Trial End Date (Optional)</label>
-                    <input
-                        type="date"
-                        name="trialEndDate"
-                        value={formData.trialEndDate || ''}
-                        onChange={handleChange}
-                        className="w-full text-sm border-gray-300 rounded-md focus:ring-blue-500 focus:border-blue-500 p-2 border"
-                    />
-                </div>
+                {!isOffline && (
+                    <div>
+                        <label className="block text-xs font-medium text-gray-500 mb-1">Trial End Date (Optional)</label>
+                        <input
+                            type="date"
+                            name="trialEndDate"
+                            value={formData.trialEndDate || ''}
+                            onChange={handleChange}
+                            className="w-full text-sm border-gray-300 rounded-md focus:ring-blue-500 focus:border-blue-500 p-2 border"
+                        />
+                    </div>
+                )}
 
                 <div>
                     <label className="block text-xs font-medium text-gray-500 mb-1">Website (Optional)</label>
@@ -217,10 +263,10 @@ const AddSubscriptionForm = () => {
                     </button>
                     <button
                         type="submit"
-                        disabled={!isValidAmount(formData.amount)}
+                        disabled={!isValidAmount(formData.amount) || saving}
                         className="flex-1 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-300 disabled:cursor-not-allowed text-white font-medium py-2 px-4 rounded-lg text-sm transition-colors"
                     >
-                        Save
+                        {saving ? 'Saving...' : isOffline ? '💾 Save Locally' : 'Save'}
                     </button>
                 </div>
             </form>

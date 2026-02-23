@@ -170,6 +170,8 @@ function addBccToFields(composeWindow) {
         }
     };
 
+    // Lazy re-fetch: if alias is null (user wasn't logged in when page loaded),
+    // fetch it now and cache for subsequent clicks
     if (!userBccAlias) {
         chrome.runtime.sendMessage({ type: 'GET_USER_BCC' }, (response) => {
             if (chrome.runtime.lastError) {
@@ -178,7 +180,7 @@ function addBccToFields(composeWindow) {
                 return;
             }
             if (response && response.bccEmail) {
-                userBccAlias = response.bccEmail;
+                userBccAlias = response.bccEmail; // Cache for subsequent clicks
                 performCopy(userBccAlias);
             } else {
                 alert('Please log in to SubDupes extension first.');
