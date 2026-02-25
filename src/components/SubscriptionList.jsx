@@ -269,35 +269,107 @@ const SubscriptionList = () => {
                     </div>
                 )}
 
-                {/* --- Category Breakdown (Feature 8) --- */}
-                {categoryStats.length > 0 && (
-                    <div className="mb-6 bg-white p-5 rounded-3xl border border-slate-100 shadow-sm">
-                        <div className="flex items-center justify-between mb-4">
-                            <h4 className="text-xs font-bold text-slate-800 uppercase tracking-tight">Spend by Category</h4>
-                            <div className="flex gap-1">
-                                <span className="w-1.5 h-1.5 rounded-full bg-indigo-500"></span>
-                                <span className="w-1.5 h-1.5 rounded-full bg-indigo-300"></span>
-                                <span className="w-1.5 h-1.5 rounded-full bg-indigo-100"></span>
+                {/* --- Category Breakdown — Spiral Ring Chart --- */}
+                {categoryStats.length > 0 && (() => {
+                    const COLORS = [
+                        ['#6366F1', '#818CF8'], // indigo
+                        ['#A855F7', '#C084FC'], // purple
+                        ['#EC4899', '#F472B6'], // pink
+                        ['#14B8A6', '#2DD4BF'], // teal
+                        ['#F59E0B', '#FCD34D'], // amber
+                    ];
+                    const slices = categoryStats.slice(0, 5);
+                    const cx = 80, cy = 80;
+                    const baseR = 60, ringW = 10, gap = 4;
+
+                    const arcPath = (r, pct) => {
+                        if (pct <= 0) return '';
+                        if (pct >= 1) pct = 0.9999;
+                        const angle = pct * 2 * Math.PI;
+                        const x1 = cx + r * Math.sin(0);
+                        const y1 = cy - r * Math.cos(0);
+                        const x2 = cx + r * Math.sin(angle);
+                        const y2 = cy - r * Math.cos(angle);
+                        const large = angle > Math.PI ? 1 : 0;
+                        return `M ${x1} ${y1} A ${r} ${r} 0 ${large} 1 ${x2} ${y2}`;
+                    };
+
+                    return (
+                        <div className="mb-6 bg-white p-5 rounded-3xl border border-slate-100 shadow-sm">
+                            <div className="flex items-center justify-between mb-3">
+                                <h4 className="text-xs font-bold text-slate-800 uppercase tracking-tight">Spend by Category</h4>
+                                <div className="flex gap-1">
+                                    <span className="w-1.5 h-1.5 rounded-full bg-indigo-500"></span>
+                                    <span className="w-1.5 h-1.5 rounded-full bg-indigo-300"></span>
+                                    <span className="w-1.5 h-1.5 rounded-full bg-indigo-100"></span>
+                                </div>
+                            </div>
+
+                            {/* SVG Spiral Rings — centred */}
+                            <div className="flex justify-center mb-4">
+                                <svg width="150" height="150" viewBox="0 0 160 160">
+                                    <defs>
+                                        {slices.map((_, i) => (
+                                            <linearGradient key={i} id={`sg${i}`} x1="0%" y1="0%" x2="100%" y2="100%">
+                                                <stop offset="0%" stopColor={COLORS[i][0]} />
+                                                <stop offset="100%" stopColor={COLORS[i][1]} />
+                                            </linearGradient>
+                                        ))}
+                                    </defs>
+
+                                    {/* Track rings */}
+                                    {slices.map((_, i) => {
+                                        const r = baseR - i * (ringW + gap);
+                                        return (
+                                            <circle key={`track-${i}`} cx={cx} cy={cy} r={r}
+                                                fill="none" stroke="#F1F5F9" strokeWidth={ringW} />
+                                        );
+                                    })}
+
+                                    {/* Filled arc rings */}
+                                    {slices.map((stat, i) => {
+                                        const r = baseR - i * (ringW + gap);
+                                        const pct = totalMonthlySpend > 0 ? stat.spend / totalMonthlySpend : 0;
+                                        return (
+                                            <path key={`arc-${i}`} d={arcPath(r, pct)}
+                                                fill="none" stroke={`url(#sg${i})`}
+                                                strokeWidth={ringW} strokeLinecap="round" />
+                                        );
+                                    })}
+
+                                    {/* Centre label */}
+                                    <text x={cx} y={cy - 6} textAnchor="middle" fontSize="14" fontWeight="700" fill="#1E293B">
+                                        {dominantCurrency.symbol}{totalMonthlySpend.toFixed(0)}
+                                    </text>
+                                    <text x={cx} y={cy + 9} textAnchor="middle" fontSize="8" fill="#94A3B8" fontWeight="500">
+                                        /month
+                                    </text>
+                                </svg>
+                            </div>
+
+                            {/* Legend — 2-column grid below chart */}
+                            <div className="grid grid-cols-2 gap-x-3 gap-y-2">
+                                {slices.map((stat, i) => {
+                                    const pct = totalMonthlySpend > 0 ? Math.round((stat.spend / totalMonthlySpend) * 100) : 0;
+                                    return (
+                                        <div key={stat.name} className="flex items-center gap-1.5 bg-slate-50 rounded-lg px-2 py-1.5">
+                                            <span
+                                                className="w-2.5 h-2.5 rounded-full shrink-0"
+                                                style={{ background: COLORS[i][0] }}
+                                            />
+                                            <div className="min-w-0 flex-1">
+                                                <div className="text-[11px] font-semibold text-slate-700 truncate">{stat.name}</div>
+                                                <div className="text-[10px] text-slate-400">
+                                                    {dominantCurrency.symbol}{stat.spend.toFixed(0)} · {pct}%
+                                                </div>
+                                            </div>
+                                        </div>
+                                    );
+                                })}
                             </div>
                         </div>
-                        <div className="space-y-4">
-                            {categoryStats.slice(0, 5).map(stat => (
-                                <div key={stat.name} className="space-y-1.5">
-                                    <div className="flex justify-between text-[11px] font-semibold text-slate-600">
-                                        <span>{stat.name}</span>
-                                        <span className="text-slate-900">{dominantCurrency.symbol}{stat.spend.toFixed(0)}</span>
-                                    </div>
-                                    <div className="h-2 w-full bg-slate-100 rounded-full overflow-hidden">
-                                        <div
-                                            className="h-full bg-gradient-to-r from-indigo-500 to-purple-500 rounded-full"
-                                            style={{ width: `${Math.max(4, (stat.spend / totalMonthlySpend) * 100)}%` }}
-                                        ></div>
-                                    </div>
-                                </div>
-                            ))}
-                        </div>
-                    </div>
-                )}
+                    );
+                })()}
 
                 {/* --- Stats Grid --- */}
                 <div className="grid grid-cols-2 gap-3 mb-6">

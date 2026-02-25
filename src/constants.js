@@ -4,7 +4,8 @@ export const VIEWS = {
     ADD_DRAFT: 'add-draft',
     ALL_SUBSCRIPTIONS: 'all-subscriptions',
     SYNC_CONFLICTS: 'sync-conflicts',
-    CATEGORIES: 'categories'
+    CATEGORIES: 'categories',
+    SCAN_SCREENSHOT: 'scan-screenshot'
 };
 
 export const DOMAIN_CATEGORIES = {

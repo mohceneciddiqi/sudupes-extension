@@ -3,6 +3,7 @@ import useStore from './store/useStore'
 import AddSubscriptionForm from './components/AddSubscriptionForm'
 import SubscriptionList from './components/SubscriptionList'
 import SyncConflictResolver from './components/SyncConflictResolver'
+import ScanScreenshot from './components/ScanScreenshot'
 import { api } from './services/api'
 import { config } from './config'
 
@@ -223,6 +224,29 @@ function App() {
       <main className="flex-1 p-4 overflow-y-auto">
         {view === VIEWS.DASHBOARD && (
           <>
+            {/* ── Primary CTA ── */}
+            <button
+              onClick={() => {
+                const url = isLoggedIn
+                  ? `${config.FRONTEND_URL}/subscriptions`
+                  : `${config.FRONTEND_URL}/login`;
+                chrome.tabs.create({ url, active: true });
+              }}
+              className="w-full mb-4 flex items-center justify-between gap-3 px-4 py-3.5 rounded-2xl text-white font-bold text-sm shadow-lg transition-all hover:scale-[1.02] active:scale-[0.98]"
+              style={{ background: 'linear-gradient(135deg, #4F46E5 0%, #7C3AED 100%)' }}
+            >
+              <div className="flex items-center gap-2.5">
+                <div className="w-7 h-7 rounded-lg bg-white/20 flex items-center justify-center shrink-0">
+                  <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
+                  </svg>
+                </div>
+                <span>Show me my Subscriptions</span>
+              </div>
+              <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 opacity-70" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
+              </svg>
+            </button>
             <div className="bg-white rounded-lg shadow-sm border border-gray-100 p-4 mb-4">
               <h2 className="text-sm font-medium text-gray-500 mb-1">Active Tabs</h2>
               <div className="text-xs text-gray-400">Scanning for subscriptions...</div>
@@ -235,6 +259,24 @@ function App() {
               >
                 <span>+ Add Subscription Draft</span>
               </button>
+
+              {/* Screenshot OCR shortcut */}
+              <button
+                onClick={() => setView(VIEWS.SCAN_SCREENSHOT)}
+                className="w-full flex items-center justify-between gap-2 px-4 py-3 rounded-xl border border-violet-200 bg-violet-50 hover:bg-violet-100 transition-colors"
+              >
+                <div className="flex items-center gap-2 text-violet-700">
+                  <span className="text-base">📷</span>
+                  <div className="text-left">
+                    <div className="text-xs font-bold">Scan This Page</div>
+                    <div className="text-[10px] opacity-70">OCR auto-fills subscription details</div>
+                  </div>
+                </div>
+                <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 text-violet-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                </svg>
+              </button>
+
               <button
                 onClick={() => setView(VIEWS.ALL_SUBSCRIPTIONS)}
                 className="w-full bg-white border border-gray-200 hover:bg-gray-50 text-gray-700 font-medium py-2 px-4 rounded-lg text-sm transition-colors mb-2"
@@ -287,6 +329,10 @@ function App() {
 
         {view === VIEWS.SYNC_CONFLICTS && (
           <SyncConflictResolver />
+        )}
+
+        {view === VIEWS.SCAN_SCREENSHOT && (
+          <ScanScreenshot />
         )}
       </main>
 

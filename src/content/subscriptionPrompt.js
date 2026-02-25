@@ -41,7 +41,7 @@ function buildPromptHTML(message) {
 
     if (type === 'SHOW_ALREADY_SUBSCRIBED_TOAST') {
         titleText = 'Already Subscribed ✅';
-        subtitleText = `You're already tracking <b>${safeName}</b> at ${symbol}${parseFloat(data.storedAmount || 0).toFixed(2)}/mo.`;
+        subtitleText = `You're already tracking <b>${safeName}</b> in SubDupes.`;
         primaryBtnText = '👀 View in SubDupes';
         headerGradient = 'linear-gradient(135deg, #10B981 0%, #059669 100%)';
         btnGradient = 'linear-gradient(135deg, #10B981 0%, #059669 100%)';
@@ -124,20 +124,21 @@ function buildPromptHTML(message) {
 
             <!-- Detected Details Card -->
             <div style="
-                background: #F8FAFC;
-                border: 1px solid #E2E8F0;
+                background: ${type === 'SHOW_ALREADY_SUBSCRIBED_TOAST' ? '#F0FDF4' : '#F8FAFC'};
+                border: 1px solid ${type === 'SHOW_ALREADY_SUBSCRIBED_TOAST' ? '#BBF7D0' : '#E2E8F0'};
                 border-radius: 10px;
                 padding: 12px;
                 margin-bottom: 14px;
             ">
                 <div style="display: flex; justify-content: space-between; align-items: center;">
-                    <div>
-                        <div style="font-size: 13px; font-weight: 600; color: #1E293B;">${safeName}${planLabel}</div>
+                    <div style="flex: 1; min-width: 0;">
+                        <div style="font-size: 13px; font-weight: 600; color: #1E293B; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">${safeName}${planLabel}</div>
                         <div style="font-size: 11px; color: #94A3B8; margin-top: 2px;">${window.location.hostname}</div>
+                        ${type === 'SHOW_ALREADY_SUBSCRIBED_TOAST' ? `<div style="display: inline-flex; align-items: center; gap: 4px; margin-top: 5px; background: #DCFCE7; border: 1px solid #86EFAC; border-radius: 20px; padding: 2px 8px;"><span style="font-size: 9px; font-weight: 700; color: #15803D; text-transform: uppercase; letter-spacing: 0.5px;">● Tracked</span></div>` : ''}
                     </div>
-                    <div style="text-align: right;">
-                        <div style="font-size: 18px; font-weight: 700; color: #2563EB;">${amount}</div>
-                        <div style="font-size: 10px; color: #94A3B8; text-transform: uppercase; letter-spacing: 0.5px;">${cycleName}</div>
+                    <div style="text-align: right; margin-left: 12px; flex-shrink: 0;">
+                        <div style="font-size: 22px; font-weight: 800; color: ${type === 'SHOW_ALREADY_SUBSCRIBED_TOAST' ? '#059669' : '#2563EB'}; letter-spacing: -0.5px;">${type === 'SHOW_ALREADY_SUBSCRIBED_TOAST' ? `${symbol}${parseFloat(data.storedAmount || 0).toFixed(2)}` : amount}</div>
+                        <div style="font-size: 10px; color: #94A3B8; text-transform: uppercase; letter-spacing: 0.5px;">/ ${cycleName}</div>
                     </div>
                 </div>
             </div>
@@ -265,7 +266,16 @@ function bindPromptActions(message) {
     if (saveBtn) {
         saveBtn.addEventListener('click', () => {
             if (type === 'SHOW_ALREADY_SUBSCRIBED_TOAST') {
-                try { chrome.runtime.sendMessage({ type: 'OPEN_POPUP' }); } catch { /* Ignore */ }
+                try {
+                    const subId = data.id || data.subscriptionId || null;
+                    const url = subId
+                        ? `https://app.subdupes.com/subscriptions/${subId}`
+                        : 'https://app.subdupes.com/subscriptions';
+                    chrome.tabs.create({ url, active: true });
+                } catch (err) {
+                    // Fallback: open via window if chrome.tabs is unavailable
+                    window.open('https://app.subdupes.com/subscriptions', '_blank');
+                }
                 removePrompt();
                 return;
             }

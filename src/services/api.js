@@ -147,6 +147,53 @@ const api = {
             console.error('Profile Sync Error:', error);
             return null;
         }
+    },
+
+    // Scan a screenshot via backend OCR
+    // dataUrl: base64 PNG string from chrome.tabs.captureVisibleTab()
+    scanScreenshot: async (dataUrl) => {
+        try {
+            const token = await getAuthToken();
+
+            // Convert base64 data URL → Blob
+            const res = await fetch(dataUrl);
+            const blob = await res.blob();
+
+            const formData = new FormData();
+            formData.append('file', blob, 'screenshot.png');
+
+            const headers = {};
+            if (token) headers['Authorization'] = `Bearer ${token}`;
+
+            const response = await fetch(`${API_BASE}/subscriptions/scan-receipt`, {
+                method: 'POST',
+                headers,
+                body: formData
+            });
+
+            if (!response.ok) {
+                const err = await response.json().catch(() => ({}));
+                throw new Error(err.message || 'OCR scan failed');
+            }
+
+            const json = await response.json();
+            // The endpoint returns an array; take the first result
+            const result = (json.data || [])[0] || null;
+            if (!result) return null;
+
+            return {
+                name: result.vendor || '',
+                amount: result.amount ? String(result.amount) : '',
+                currency: result.currency || 'USD',
+                billingCycle: result.billingCycle || 'MONTHLY',
+                confidence: result.confidence || 'LOW',
+                confidenceScore: result.confidenceScore || 0,
+                websiteUrl: ''
+            };
+        } catch (error) {
+            console.error('Screenshot OCR Error:', error);
+            throw error;
+        }
     }
 };
 

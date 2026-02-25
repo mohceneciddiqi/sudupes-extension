@@ -408,9 +408,11 @@ async function checkUrlMatch(tabId, url) {
                     chrome.tabs.sendMessage(tabId, {
                         type: 'SHOW_ALREADY_SUBSCRIBED_TOAST',
                         data: {
+                            id: match.id || match._id || null,
                             name: match.name,
                             storedAmount: match.amount,
                             storedCurrency: match.currency,
+                            billingCycle: match.billingCycle || 'MONTHLY',
                             websiteUrl: match.websiteUrl
                         }
                     }).then(() => {
