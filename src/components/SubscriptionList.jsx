@@ -1,6 +1,13 @@
 import useStore from '../store/useStore'
 import React, { useState, useMemo, useEffect } from 'react'
 import { VIEWS, DOMAIN_CATEGORIES } from '../constants'
+import {
+    CURRENCY_SYMBOLS,
+    normalizeToUSD,
+    normalizeToMonthly,
+    calculateMonthlySpend,
+    getDominantCurrency
+} from '../utils/calculations'
 
 // --- Utility Functions ---
 const getDomain = (url) => {
@@ -27,8 +34,8 @@ const SubscriptionItem = ({ sub }) => {
     const faviconUrl = domain ? `https://www.google.com/s2/favicons?domain=${domain}&sz=64` : null;
 
     return (
-        <div className="bg-white p-4 rounded-xl border border-gray-100 shadow-sm flex items-center justify-between hover:shadow-md transition-shadow">
-            <div className="flex items-center gap-3">
+        <div className="bg-white p-4 rounded-xl border border-gray-100 shadow-sm flex items-center justify-between hover:shadow-md transition-shadow gap-3 min-w-0">
+            <div className="flex items-center gap-3 min-w-0 flex-1">
                 {/* Logo */}
                 <div className="w-10 h-10 rounded-lg bg-gray-50 border border-gray-100 flex items-center justify-center p-1.5 overflow-hidden shrink-0">
                     {!imgError && faviconUrl ? (
@@ -46,7 +53,7 @@ const SubscriptionItem = ({ sub }) => {
                 </div>
 
                 {/* Info */}
-                <div className="min-w-0">
+                <div className="min-w-0 flex-1">
                     <h3 className="font-bold text-gray-900 text-sm truncate">{sub.name}</h3>
                     <div className="flex items-center gap-2 mt-0.5">
                         <span className="text-[10px] text-gray-500 font-medium bg-gray-100 px-1.5 py-0.5 rounded shrink-0">
@@ -60,11 +67,11 @@ const SubscriptionItem = ({ sub }) => {
             </div>
 
             {/* Cost */}
-            <div className="text-right shrink-0 ml-2">
-                <div className="font-bold text-gray-900 text-sm">
+            <div className="text-right shrink-0 min-w-[80px]">
+                <div className="font-bold text-gray-900 text-sm truncate">
                     {sub.currency} {Number(sub.amount || 0).toFixed(2)}
                 </div>
-                <div className="text-[10px] text-gray-400">
+                <div className="text-[10px] text-gray-400 uppercase tracking-tighter">
                     {sub.billingCycle === 'MONTHLY' ? 'monthly' : 'yearly'}
                 </div>
             </div>
@@ -87,50 +94,15 @@ const SubscriptionList = () => {
     // 1. Total Count (Exclude SubDupes Rewards)
     const totalCount = subscriptions.filter(s => !s.name.includes('SubDupes')).length;
 
-    // 2. Total Monthly Spend (Normalizing Yearly loops and normalizing currencies for budget check)
-    const normalizeToUSD = (amount, currency) => {
-        const rates = { USD: 1, EUR: 1.08, GBP: 1.26, INR: 0.012, PKR: 0.0036, BRL: 0.20, TRY: 0.031 };
-        return amount * (rates[currency] || 1);
-    };
-
-    const totalMonthlySpendNormalized = subscriptions.reduce((acc, sub) => {
-        if (sub.name.includes('SubDupes')) return acc;
-        let amount = Number(sub.amount || 0);
-        if (sub.billingCycle === 'YEARLY') amount = amount / 12;
-        else if (sub.billingCycle === 'WEEKLY') amount = amount * 4.345;
-
-        return acc + normalizeToUSD(amount, sub.currency || 'USD');
-    }, 0);
-
-    const totalMonthlySpend = subscriptions.reduce((acc, sub) => {
-        if (sub.name.includes('SubDupes')) return acc;
-        let amount = Number(sub.amount || 0);
-        if (sub.billingCycle === 'YEARLY') amount = amount / 12;
-        else if (sub.billingCycle === 'WEEKLY') amount = amount * 4.345;
-        return acc + amount;
-    }, 0);
+    const { totalLocal: totalMonthlySpend, totalNormalizedUSD: totalMonthlySpendNormalized } = useMemo(() =>
+        calculateMonthlySpend(subscriptions),
+        [subscriptions]);
 
     // Determine dominant currency from subscriptions
-    const dominantCurrency = useMemo(() => {
-        const currencySymbols = { USD: '$', EUR: '€', GBP: '£', INR: '₹', JPY: '¥', PKR: 'Rs', AED: 'AED', SAR: 'SAR', BRL: 'R$', TRY: '₺', AUD: 'A$', CAD: 'C$' };
-        const counts = {};
-        subscriptions.forEach(s => {
-            if (s.name?.includes('SubDupes')) return;
-            const c = s.currency || 'USD';
-            counts[c] = (counts[c] || 0) + 1;
-        });
-        const top = Object.entries(counts).sort((a, b) => b[1] - a[1])[0];
-        const code = top ? top[0] : 'USD';
-        return { code, symbol: currencySymbols[code] || code };
-    }, [subscriptions]);
+    const dominantCurrency = useMemo(() =>
+        getDominantCurrency(subscriptions),
+        [subscriptions]);
 
-    // Sort by normalized monthly cost descending
-    const normalizeToMonthly = (sub) => {
-        let amount = Number(sub.amount || 0);
-        if (sub.billingCycle === 'YEARLY') amount = amount / 12;
-        else if (sub.billingCycle === 'WEEKLY') amount = amount * 4.345;
-        return amount;
-    };
     const sortedList = [...subscriptions].sort((a, b) => normalizeToMonthly(b) - normalizeToMonthly(a));
 
     // Calculate Unused (Feature Refinement: 7-day grace period for new subs)
@@ -217,9 +189,9 @@ const SubscriptionList = () => {
     const potentialSavings = totalMonthlySpend * 0.15; // 15% estimated optimization potential
 
     return (
-        <div className="flex flex-col h-full bg-slate-50 font-sans">
+        <div className="flex flex-col h-full bg-slate-50 font-sans max-w-full overflow-hidden">
             {/* --- Header --- */}
-            <div className="px-5 py-4 flex items-center justify-between bg-white sticky top-0 z-20 shadow-sm border-b border-gray-100">
+            <div className="px-4 py-4 flex items-center justify-between bg-white sticky top-0 z-20 shadow-sm border-b border-gray-100">
                 <div className="flex items-center gap-2">
                     <button
                         onClick={() => setView(VIEWS.DASHBOARD)}
@@ -244,7 +216,7 @@ const SubscriptionList = () => {
                 </div>
             </div>
 
-            <div className="flex-1 overflow-y-auto p-5 pb-10">
+            <div className="flex-1 overflow-y-auto p-4 pb-10">
 
                 {/* --- Description Text --- */}
                 <p className="text-gray-500 text-xs mb-4 px-1">

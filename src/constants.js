@@ -5,7 +5,8 @@ export const VIEWS = {
     ALL_SUBSCRIPTIONS: 'all-subscriptions',
     SYNC_CONFLICTS: 'sync-conflicts',
     CATEGORIES: 'categories',
-    SCAN_SCREENSHOT: 'scan-screenshot'
+    SCAN_SCREENSHOT: 'scan-screenshot',
+    REVIEW_DETECTIONS: 'review-detections'
 };
 
 export const DOMAIN_CATEGORIES = {
@@ -39,3 +40,22 @@ export const RECEIPT_SENDERS = [
     'googleplay-noreply@google.com', 'no-reply@netflix.com', 'office@microsoft.com',
     'billing@openai.com', 'notices@customer.apple.com'
 ];
+
+// ─── Gmail SaaS Scanner ───────────────────────────────────────────────────
+
+export const GMAIL_SEARCH_KEYWORDS = [
+    'receipt', 'invoice', 'subscription', 'payment', 'renewal',
+    'order confirmation', 'billed', 'transaction', 'thank you for your purchase',
+    'billing', 'membership', 'premium', 'account summary'
+];
+
+export const GMAIL_SAAS_PROVIDERS = [
+    'Netflix', 'Spotify', 'Adobe', 'Microsoft', 'Google', 'AWS', 'DigitalOcean',
+    'Slack', 'Zoom', 'Canva', 'OpenAI', 'ChatGPT', 'Midjourney', 'GitHub', 'Heroku',
+    'Vercel', 'Shopify', 'Mailchimp', 'Dropbox', 'iCloud', 'Disney+', 'Hulu',
+    'Paramount+', 'Peacock', 'YouTube Premium', 'Figma', 'Notion', 'Calendly',
+    'Grammarly', 'Dashlane', '1Password', 'NordVPN', 'Surfshark', 'ExpressVPN',
+    'Squarespace', 'Wix', 'Ghost', 'Substack', 'Patreon', 'LinkedIn'
+];
+
+export const GMAIL_ENRICHED_QUERY = `subject:(${GMAIL_SEARCH_KEYWORDS.slice(0, 9).join(' OR ')}) OR (${GMAIL_SAAS_PROVIDERS.slice(0, 15).join(' OR ')}) -from:me`;

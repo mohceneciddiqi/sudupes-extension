@@ -508,6 +508,7 @@ const PRICE_HIKE_HTML = `
         <span>Current:</span>
         <span style="font-weight: 600;">__CURRENCY____CURRENT_PRICE__</span>
       </div>
+      __DETECTION_DETAILS__
     </div>
   </div>
 </div>
@@ -537,20 +538,23 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             if (priceMatches.length === 0) return;
 
             // Re-use existing robust normalization for price comparisons
-            const prices = priceMatches
-                .map(m => normalizePrice(m))
-                .filter(p => p !== null)
-                .map(p => parseFloat(p))
-                .filter(p => p > 0);
+            const priceObjects = priceMatches
+                .map(m => {
+                    const norm = normalizePrice(m);
+                    return norm ? { raw: m, val: parseFloat(norm) } : null;
+                })
+                .filter(p => p !== null && p.val > 0);
 
-            if (prices.length === 0) return;
+            if (priceObjects.length === 0) return;
 
-            // Find the price closest to (but potentially higher than) the stored amount
-            const closestPrice = prices.reduce((best, p) => {
-                const bestDiff = Math.abs(best - storedAmount);
-                const pDiff = Math.abs(p - storedAmount);
+            // Find the price object closest to (but potentially higher than) the stored amount
+            const closestPriceObj = priceObjects.reduce((best, p) => {
+                const bestDiff = Math.abs(best.val - storedAmount);
+                const pDiff = Math.abs(p.val - storedAmount);
                 return pDiff < bestDiff ? p : best;
-            }, prices[0]);
+            }, priceObjects[0]);
+
+            const closestPrice = closestPriceObj.val;
 
             // Trigger alert if the current price is >5% higher than stored
             const hikeThreshold = storedAmount * 1.05;
@@ -560,11 +564,34 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
                 const currencySymbols = { USD: '$', EUR: '€', GBP: '£', INR: '₹', JPY: '¥', PKR: '₨', BRL: 'R$', TRY: '₺' };
                 const symbol = currencySymbols[storedCurrency] || storedCurrency || '$';
 
+                // Context surrounding the detected price
+                const index = bodyText.indexOf(closestPriceObj.raw);
+                let contextSnippet = closestPriceObj.raw;
+                if (index !== -1) {
+                    const start = Math.max(0, index - 30);
+                    const end = Math.min(bodyText.length, index + closestPriceObj.raw.length + 30);
+                    contextSnippet = bodyText.substring(start, end).replace(/\n/g, ' ').trim();
+                    if (start > 0) contextSnippet = '...' + contextSnippet;
+                    if (end < bodyText.length) contextSnippet = contextSnippet + '...';
+                }
+
+                const detectionDetails = `
+                  <div style="margin-top: 12px; font-size: 11px; color: #6B7280; padding-top: 8px; border-top: 1px solid #E5E7EB;">
+                    <strong style="color: #4B5563;">How we found this:</strong><br/>
+                    We detected the text <span style="background: #F3F4F6; padding: 1px 4px; border-radius: 3px; font-family: monospace; color: #374151;">${closestPriceObj.raw.replace(/</g, '&lt;').replace(/>/g, '&gt;')
+                    }</span> on the page:
+                    <div style="margin-top: 4px; font-style: italic; background: #F9FAFB; padding: 6px; border-radius: 4px; border: 1px dashed #D1D5DB; color: #4B5563; word-break: break-word;">
+                      "${contextSnippet.replace(/</g, '&lt;').replace(/>/g, '&gt;')}"
+                    </div>
+                  </div>
+                `;
+
                 const container = document.createElement('div');
                 container.innerHTML = PRICE_HIKE_HTML
                     .replace(/__CURRENCY__/g, symbol)
                     .replace('__LAST_PRICE__', storedAmount.toFixed(2))
-                    .replace('__CURRENT_PRICE__', closestPrice.toFixed(2));
+                    .replace('__CURRENT_PRICE__', closestPrice.toFixed(2))
+                    .replace('__DETECTION_DETAILS__', detectionDetails);
                 document.body.appendChild(container);
 
                 const closeBtn = document.getElementById('sd-close');
@@ -584,7 +611,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         const container = document.createElement('div');
         container.innerHTML = PRICE_HIKE_HTML
             .replace('__LAST_PRICE__', lastPrice)
-            .replace('__CURRENT_PRICE__', currentPrice);
+            .replace('__CURRENT_PRICE__', currentPrice)
+            .replace('__DETECTION_DETAILS__', '');
         document.body.appendChild(container);
 
         document.getElementById('sd-close').onclick = () => container.remove();

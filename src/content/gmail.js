@@ -1,8 +1,17 @@
 console.log('SubDupes Gmail Module Loaded');
 
 const GMAIL_PRICE_REGEX = /(?:[$€£¥₹₨]|Rs\.?|R\$)\s?(?:\d{1,3}(?:[,.\s]\d{3})*(?:[.,]\d{1,2})?|\.\d{2}|,\d{2})\s?(?:\/|per|mo|month|yr|year|annually|wk|week|weekly)/i;
-const GMAIL_RECEIPT_WORDS = ['receipt', 'invoice', 'order confirmation', 'subscription', 'payment', 'billed', 'thank you for your purchase'];
-const GMAIL_KNOWN_SENDERS = ['netflix.com', 'spotify.com', 'openai.com', 'microsoft.com', 'amazon.com', 'google.com', 'apple.com', 'adobe.com', 'canva.com', 'zoom.us'];
+const GMAIL_RECEIPT_WORDS = ['receipt', 'invoice', 'order confirmation', 'subscription', 'payment', 'billed', 'thank you for your purchase', 'transaction', 'membership', 'billed'];
+const GMAIL_KNOWN_SENDERS = ['netflix.com', 'spotify.com', 'openai.com', 'microsoft.com', 'amazon.com', 'google.com', 'apple.com', 'adobe.com', 'canva.com', 'zoom.us', 'aws.amazon.com', 'digitalocean.com', 'slack.com', 'github.com', 'vercel.com', 'shopify.com'];
+
+const POPULAR_SAAS = [
+    'Netflix', 'Spotify', 'Adobe', 'Microsoft', 'Google', 'AWS', 'DigitalOcean',
+    'Slack', 'Zoom', 'Canva', 'OpenAI', 'ChatGPT', 'GitHub', 'Heroku', 'Vercel',
+    'Shopify', 'Mailchimp', 'Dropbox', 'iCloud', 'Disney+', 'Hulu', 'Paramount+',
+    'Peacock', 'YouTube', 'Figma', 'Notion', 'Calendly', 'Grammarly', '1Password',
+    'NordVPN', 'Surfshark', 'ExpressVPN', 'Squarespace', 'Wix', 'Ghost', 'Substack',
+    'Patreon', 'LinkedIn', 'Grammarly', 'Dashlane'
+];
 
 let lastScannedThreadId = null;
 
@@ -197,8 +206,6 @@ function addBccToFields(composeWindow) {
 }
 
 
-// ─── Thread Scanner (Feature 5) ───────────────────────────────────────────
-
 const scanGmailThread = () => {
     // Check if we are in a thread view
     const threadContainer = document.querySelector('div[role="main"] .if');
@@ -284,6 +291,81 @@ const scanGmailThread = () => {
     });
 };
 
+// ─── List Scanner (Bulk Detection) ──────────────────────────────────────────
+
+const scanGmailList = () => {
+    // Check if we are in a list view (Inbox, Search, etc.)
+    const isSearch = window.location.hash.includes('#search/');
+    if (!isSearch) return;
+
+    const listContainer = document.querySelector('div[role="main"] table.F.cf.zt');
+    if (!listContainer) return;
+
+    console.log('SubDupes: Scanning list for bulk subscriptions...');
+
+    const rows = listContainer.querySelectorAll('tr.zA');
+    const detections = [];
+
+    rows.forEach(row => {
+        const sender = row.querySelector('.yX')?.innerText || '';
+        const subject = row.querySelector('.y6')?.innerText || '';
+        const snippet = row.querySelector('.y2')?.innerText || '';
+        const fullText = (sender + ' ' + subject + ' ' + snippet).toLowerCase();
+
+        // 1. Identify Service Name
+        let identifiedService = null;
+        for (const saas of POPULAR_SAAS) {
+            if (fullText.includes(saas.toLowerCase())) {
+                identifiedService = saas;
+                break;
+            }
+        }
+
+        // 2. Look for price in snippet or subject
+        const combinedText = subject + ' ' + snippet;
+        const priceMatch = combinedText.match(GMAIL_PRICE_REGEX);
+
+        const hasReceiptWord = GMAIL_RECEIPT_WORDS.some(word => fullText.includes(word));
+
+        if (identifiedService || (hasReceiptWord && priceMatch)) {
+            const rawPrice = priceMatch ? priceMatch[0] : null;
+            let amount = null;
+            let currency = 'USD';
+            let billingCycle = 'MONTHLY';
+
+            if (rawPrice) {
+                let cleanPrice = rawPrice.replace(/[^\d.,]/g, '').trim();
+                if (cleanPrice.includes(',') && !cleanPrice.includes('.')) cleanPrice = cleanPrice.replace(',', '.');
+                amount = parseFloat(cleanPrice);
+
+                if (rawPrice.includes('€')) currency = 'EUR';
+                else if (rawPrice.includes('£')) currency = 'GBP';
+                else if (rawPrice.includes('₹')) currency = 'INR';
+                else if (rawPrice.toLowerCase().includes('yr')) billingCycle = 'YEARLY';
+            }
+
+            detections.push({
+                id: `gmail_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`,
+                name: identifiedService || sender.split(/[<@]/)[0].trim() || 'Subscription',
+                amount: amount || 0,
+                currency: currency,
+                websiteUrl: identifiedService ? `${identifiedService.toLowerCase()}.com` : '',
+                billingCycle: billingCycle,
+                source: 'GMAIL_BULK_SCAN',
+                isNew: true
+            });
+        }
+    });
+
+    if (detections.length > 0) {
+        console.log(`SubDupes: Detected ${detections.length} subscriptions in list.`);
+        chrome.runtime.sendMessage({
+            type: 'BULK_DETECTION',
+            data: detections
+        });
+    }
+};
+
 // Observer for new compose windows and thread views
 const observer = new MutationObserver((mutations) => {
     let shouldScanThread = false;
@@ -308,6 +390,8 @@ const observer = new MutationObserver((mutations) => {
 
     if (shouldScanThread) {
         setTimeout(scanGmailThread, 1000); // Wait for body to load
+    } else if (window.location.hash.includes('#search/')) {
+        setTimeout(scanGmailList, 1500); // Scan search results
     }
 });
 

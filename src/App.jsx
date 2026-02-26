@@ -5,16 +5,33 @@ import SubscriptionList from './components/SubscriptionList'
 import SyncConflictResolver from './components/SyncConflictResolver'
 import ScanScreenshot from './components/ScanScreenshot'
 import { api } from './services/api'
-import { config } from './config'
+import { config, FREEMIUM_LIMIT_FALLBACK } from './config'
 
-import { VIEWS } from './constants'
+import { VIEWS, GMAIL_ENRICHED_QUERY } from './constants'
+import { calculateMonthlySpend, getDominantCurrency } from './utils/calculations'
+import { useMemo } from 'react'
+import ReviewDetections from './components/ReviewDetections'
 
 function App() {
   const {
     view, setView, checkStorage, setUser,
-    pendingSubscriptions, syncConflicts, user
+    pendingSubscriptions, syncConflicts, user,
+    subscriptions, detectedSubscriptions
   } = useStore()
   const [init, setInit] = useState(false)
+
+  // Move Metric Calculations to top level to avoid React Hook violations
+  const { totalLocal: totalMonthlySpend, totalNormalizedUSD: totalMonthlySpendNormalized } = useMemo(() =>
+    calculateMonthlySpend(subscriptions),
+    [subscriptions, view]);
+
+  const dominantCurrency = useMemo(() =>
+    getDominantCurrency(subscriptions),
+    [subscriptions]);
+
+  const isLoggedIn = !!user;
+  const monthlyBudget = user?.monthlyBudget || 500;
+  const budgetUsagePercent = Math.min(100, Math.round((totalMonthlySpendNormalized / monthlyBudget) * 100));
 
   const handleSync = async () => {
     try {
@@ -111,6 +128,9 @@ function App() {
           }
         } else {
           // Not logged in — still listen for drafts
+          if (changes.userProfile) {
+            useStore.getState().setUser(changes.userProfile.newValue || null);
+          }
           if (changes.detectedDraft) {
             useStore.getState().checkStorage();
           }
@@ -189,138 +209,239 @@ function App() {
 
   // ─── Main Layout ─────────────────────────────────────────────────────────
 
-  const isLoggedIn = !!user;
-
   return (
-    <div className="w-full h-full bg-gray-50 flex flex-col">
+    <div className="w-[400px] min-h-[500px] bg-slate-50 flex flex-col font-sans select-none overflow-hidden text-slate-900">
       {/* Header */}
-      <header className="bg-white border-b border-gray-200 px-4 py-3 flex items-center justify-between shadow-sm sticky top-0 z-10">
-        <div className="flex items-center gap-2">
-          <div className="w-6 h-6 bg-blue-600 rounded-md flex items-center justify-center text-white font-bold text-xs">
+      <header className="bg-white px-4 py-4 flex items-center justify-between border-b border-slate-100 z-20">
+        <div className="flex items-center gap-2.5">
+          <div className="w-8 h-8 bg-indigo-600 rounded-xl flex items-center justify-center text-white font-black text-sm shadow-indigo-100 shadow-lg">
             S
           </div>
-          <h1 className="font-semibold text-gray-800">SubDupes</h1>
-          {/* Pending count indicator */}
-          {pendingSubscriptions.length > 0 && (
-            <span className="bg-amber-100 text-amber-700 text-[10px] font-bold px-1.5 py-0.5 rounded-full">
-              {pendingSubscriptions.length} pending
-            </span>
-          )}
+          <div>
+            <h1 className="font-bold text-base leading-none text-slate-800">SubDupes</h1>
+            <p className="text-[10px] text-slate-400 font-medium">Subscription Intelligence</p>
+          </div>
         </div>
-        <div className="flex items-center">
+
+        <div className="flex items-center gap-1.5">
           <button
             onClick={handleSync}
-            className="text-gray-400 hover:text-blue-600 transition-colors p-1.5 rounded-xl hover:bg-blue-50"
-            title="Rescan current page for subscriptions"
+            className="w-8 h-8 flex items-center justify-center text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-full transition-all"
+            title="Refresh & Sync"
           >
             <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
             </svg>
           </button>
+
+          {isLoggedIn && (
+            <div className="w-8 h-8 rounded-full bg-slate-100 border border-slate-200 flex items-center justify-center text-[10px] font-bold text-slate-500 overflow-hidden">
+              {user.avatarUrl ? (
+                <img src={user.avatarUrl} alt="Avatar" className="w-full h-full object-cover" />
+              ) : (
+                (user.firstName || user.email || 'U')[0].toUpperCase()
+              )}
+            </div>
+          )}
         </div>
       </header>
 
       {/* Main Content */}
-      <main className="flex-1 p-4 overflow-y-auto">
+      <main className="flex-1 flex flex-col min-h-0 overflow-hidden">
         {view === VIEWS.DASHBOARD && (
-          <>
-            {/* ── Primary CTA ── */}
-            <button
-              onClick={() => {
-                const url = isLoggedIn
-                  ? `${config.FRONTEND_URL}/subscriptions`
-                  : `${config.FRONTEND_URL}/login`;
-                chrome.tabs.create({ url, active: true });
-              }}
-              className="w-full mb-4 flex items-center justify-between gap-3 px-4 py-3.5 rounded-2xl text-white font-bold text-sm shadow-lg transition-all hover:scale-[1.02] active:scale-[0.98]"
-              style={{ background: 'linear-gradient(135deg, #4F46E5 0%, #7C3AED 100%)' }}
-            >
-              <div className="flex items-center gap-2.5">
-                <div className="w-7 h-7 rounded-lg bg-white/20 flex items-center justify-center shrink-0">
-                  <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
-                  </svg>
-                </div>
-                <span>Show me my Subscriptions</span>
+          <div className="flex-1 overflow-y-auto p-4 animate-in fade-in slide-in-from-bottom-2 duration-300">
+            {/* Welcome */}
+            <div className="mb-4 flex items-center justify-between gap-2">
+              <div className="min-w-0">
+                <h2 className="text-sm font-medium text-slate-400">Welcome back,</h2>
+                <h3 className="text-xl font-bold text-slate-800 truncate">{user?.firstName || 'Subscriber'}</h3>
               </div>
-              <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 opacity-70" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
-              </svg>
-            </button>
-            <div className="bg-white rounded-lg shadow-sm border border-gray-100 p-4 mb-4">
-              <h2 className="text-sm font-medium text-gray-500 mb-1">Active Tabs</h2>
-              <div className="text-xs text-gray-400">Scanning for subscriptions...</div>
+              <div className="flex flex-col items-end shrink-0">
+                <span className={`text-[10px] font-black px-2 py-0.5 rounded-full uppercase tracking-wider ${user?.plan === 'PRO' || user?.plan === 'ENTERPRISE' ? 'bg-indigo-600 text-white shadow-md' : 'bg-slate-200 text-slate-500'}`}>
+                  {user?.plan || 'Free'}
+                </span>
+                {user?.plan === 'FREEMIUM' && (
+                  <button
+                    onClick={() => chrome.tabs.create({ url: 'https://app.subdupes.com/settings?tab=billing' })}
+                    className="text-[9px] font-bold text-indigo-600 hover:text-indigo-700 mt-1 underline"
+                  >
+                    Upgrade
+                  </button>
+                )}
+              </div>
             </div>
 
-            <div className="space-y-2">
-              <button
-                onClick={() => setView(VIEWS.ADD_DRAFT)}
-                className="w-full bg-blue-600 hover:bg-blue-700 text-white font-medium py-2 px-4 rounded-lg text-sm transition-colors flex items-center justify-center gap-2 shadow-sm"
-              >
-                <span>+ Add Subscription Draft</span>
-              </button>
+            {/* Metrics Overview */}
+            <div className="grid grid-cols-2 gap-3 mb-5">
+              <div className="bg-white p-3.5 rounded-2xl border border-slate-100 shadow-sm min-w-0">
+                <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1 truncate">Monthly Spend</p>
+                <p className="text-xl font-black text-slate-800 truncate">
+                  <span className="text-sm font-bold text-indigo-500 mr-0.5">{dominantCurrency.symbol}</span>
+                  {totalMonthlySpend.toFixed(0)}
+                </p>
+                <div className="mt-2 flex items-center gap-1">
+                  <div className="flex -space-x-1">
+                    {subscriptions.slice(0, 3).map((s, i) => (
+                      <div key={i} className="w-4 h-4 rounded-full bg-slate-50 border border-white flex items-center justify-center text-[6px] font-bold text-slate-400 shadow-sm">
+                        {s.name[0]}
+                      </div>
+                    ))}
+                  </div>
+                  <span className="text-[9px] text-slate-400 font-medium">+{subscriptions.length} subs</span>
+                </div>
+              </div>
 
-              {/* Screenshot OCR shortcut */}
+              <div className="bg-white p-3.5 rounded-2xl border border-slate-100 shadow-sm min-w-0">
+                <div className="flex items-center justify-between mb-1 gap-1">
+                  <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider truncate">Slots</p>
+                  <span className={`text-[9px] font-bold px-1 rounded shrink-0 ${(user?.subscriptionCount || subscriptions.length) >= (user?.maxSubscriptions || FREEMIUM_LIMIT_FALLBACK) ? 'bg-red-50 text-red-600' : 'bg-indigo-50 text-indigo-600'}`}>
+                    {user?.subscriptionCount || subscriptions.length}/{user?.maxSubscriptions === -1 ? '∞' : (user?.maxSubscriptions || FREEMIUM_LIMIT_FALLBACK)}
+                  </span>
+                </div>
+                <p className="text-xl font-black text-slate-800 truncate">
+                  {Math.round(((user?.subscriptionCount || subscriptions.length) / (user?.maxSubscriptions === -1 ? Infinity : (user?.maxSubscriptions || FREEMIUM_LIMIT_FALLBACK))) * 100) || 0}
+                  <span className="text-sm font-bold text-slate-400 ml-0.5">%</span>
+                </p>
+                <div className="mt-3 w-full h-1.5 bg-slate-100 rounded-full overflow-hidden">
+                  <div
+                    className={`h-full transition-all duration-1000 ${(user?.subscriptionCount || subscriptions.length) >= (user?.maxSubscriptions || FREEMIUM_LIMIT_FALLBACK) ? 'bg-red-500' : 'bg-indigo-500'}`}
+                    style={{ width: `${Math.min(100, ((user?.subscriptionCount || subscriptions.length) / (user?.maxSubscriptions === -1 ? 100 : (user?.maxSubscriptions || FREEMIUM_LIMIT_FALLBACK))) * 100)}%` }}
+                  />
+                </div>
+              </div>
+            </div>
+
+            {/* New Findings Notification */}
+            {detectedSubscriptions?.length > 0 && (
               <button
-                onClick={() => setView(VIEWS.SCAN_SCREENSHOT)}
-                className="w-full flex items-center justify-between gap-2 px-4 py-3 rounded-xl border border-violet-200 bg-violet-50 hover:bg-violet-100 transition-colors"
+                onClick={() => setView(VIEWS.REVIEW_DETECTIONS)}
+                className="w-full mb-4 p-3 bg-indigo-50 border border-indigo-100 rounded-2xl flex items-center justify-between group hover:bg-indigo-100 transition-colors"
               >
-                <div className="flex items-center gap-2 text-violet-700">
-                  <span className="text-base">📷</span>
+                <div className="flex items-center gap-3">
+                  <div className="w-8 h-8 bg-indigo-600 text-white rounded-xl flex items-center justify-center text-xs animate-bounce">
+                    ✨
+                  </div>
                   <div className="text-left">
-                    <div className="text-xs font-bold">Scan This Page</div>
-                    <div className="text-[10px] opacity-70">OCR auto-fills subscription details</div>
+                    <p className="text-sm font-bold text-indigo-900">New Findings Available</p>
+                    <p className="text-[10px] text-indigo-400 font-medium">We found {detectedSubscriptions.length} subscriptions in your Gmail.</p>
                   </div>
                 </div>
-                <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 text-violet-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
-                </svg>
+                <div className="w-6 h-6 rounded-full bg-white flex items-center justify-center text-indigo-600 shadow-sm group-hover:translate-x-1 transition-transform">
+                  <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M9 5l7 7-7 7" />
+                  </svg>
+                </div>
+              </button>
+            )}
+
+            {/* ── Smart Scanner Card ── */}
+            <div className="mb-5 bg-white rounded-2xl border border-slate-100 shadow-sm overflow-hidden border-l-4 border-l-indigo-600 min-w-0">
+              <div className="p-4 flex items-center justify-between gap-2">
+                <div className="min-w-0">
+                  <h4 className="font-bold text-sm text-slate-800 truncate">Smart Page Scanner</h4>
+                  <p className="text-[11px] text-slate-400 mt-0.5 truncate">Detecting subscriptions...</p>
+                </div>
+                <div className="flex gap-1">
+                  <span className="w-1.5 h-1.5 rounded-full bg-indigo-500 animate-pulse"></span>
+                  <span className="w-1.5 h-1.5 rounded-full bg-indigo-300 animate-pulse delay-75"></span>
+                  <span className="w-1.5 h-1.5 rounded-full bg-indigo-100 animate-pulse delay-150"></span>
+                </div>
+              </div>
+
+              <div className="px-4 pb-4">
+                <button
+                  onClick={() => setView(VIEWS.SCAN_SCREENSHOT)}
+                  className="w-full py-2.5 bg-slate-50 hover:bg-indigo-50 text-indigo-700 rounded-xl font-bold text-xs transition-all flex items-center justify-center gap-2 border border-slate-100"
+                >
+                  <span className="text-base">📷</span>
+                  Scan Current Window (OCR)
+                </button>
+              </div>
+            </div>
+
+            {/* Quick Actions Grid */}
+            <h4 className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-3 pl-1">Command Center</h4>
+            <div className="grid grid-cols-2 gap-3 mb-6">
+              <button
+                onClick={() => setView(VIEWS.ADD_DRAFT)}
+                className="flex flex-col items-center justify-center p-4 bg-white hover:bg-slate-50 border border-slate-100 rounded-2xl transition-all group min-w-0"
+              >
+                <div className="w-10 h-10 rounded-xl bg-blue-50 text-blue-600 flex items-center justify-center mb-2 group-hover:scale-110 transition-transform shrink-0">
+                  <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+                  </svg>
+                </div>
+                <span className="text-[11px] font-bold text-slate-600 truncate w-full text-center">Add Draft</span>
               </button>
 
               <button
                 onClick={() => setView(VIEWS.ALL_SUBSCRIPTIONS)}
-                className="w-full bg-white border border-gray-200 hover:bg-gray-50 text-gray-700 font-medium py-2 px-4 rounded-lg text-sm transition-colors mb-2"
+                className="flex flex-col items-center justify-center p-4 bg-white hover:bg-slate-50 border border-slate-100 rounded-2xl transition-all group min-w-0"
               >
-                View All Subscriptions
-              </button>
-
-              <hr className="border-gray-100 my-3" />
-
-              <div onClick={async () => {
-                const query = 'subject:(receipt OR invoice OR subscription OR payment OR renewal) -from:me';
-
-                let accountIndex = '0';
-                try {
-                  const tabs = await chrome.tabs.query({ url: 'https://mail.google.com/*' });
-                  if (tabs.length > 0) {
-                    const match = tabs[0].url.match(/\/mail\/u\/(\d+)\//);
-                    if (match) {
-                      accountIndex = match[1];
-                    }
-                  }
-                } catch (error) {
-                  console.log('Could not detect Gmail account, using default:', error);
-                }
-
-                const url = `https://mail.google.com/mail/u/${accountIndex}/#search/${encodeURIComponent(query)}`;
-                chrome.tabs.create({ url });
-              }} className="cursor-pointer bg-indigo-50 hover:bg-indigo-100 border border-indigo-100 p-3 rounded-lg flex items-center gap-3 transition-colors">
-                <div className="bg-white p-1.5 rounded text-indigo-600 shadow-sm">
-                  <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 4a1 1 0 011-1h16a1 1 0 011 1v2.586a1 1 0 01-.293.707l-6.414 6.414a1 1 0 00-.293.707V17l-4 4v-6.586a1 1 0 00-.293-.707L3.293 7.293A1 1 0 013 6.586V4z" />
+                <div className="w-10 h-10 rounded-xl bg-purple-50 text-purple-600 flex items-center justify-center mb-2 group-hover:scale-110 transition-transform shrink-0">
+                  <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" />
                   </svg>
                 </div>
-                <div>
-                  <div className="text-xs font-semibold text-indigo-900">Find Lost Receipts</div>
-                  <div className="text-[10px] text-indigo-700">Open Gmail search for invoices</div>
+                <span className="text-[11px] font-bold text-slate-600 truncate w-full text-center">My Dashboard</span>
+              </button>
+
+              <button
+                onClick={async () => {
+                  const url = `https://mail.google.com/mail/u/0/#search/${encodeURIComponent(GMAIL_ENRICHED_QUERY)}`;
+                  chrome.tabs.create({ url });
+                }}
+                className="flex flex-col items-center justify-center p-4 bg-white hover:bg-slate-50 border border-slate-100 rounded-2xl transition-all group"
+              >
+                <div className="w-10 h-10 rounded-xl bg-amber-50 text-amber-600 flex items-center justify-center mb-2 group-hover:scale-110 transition-transform">
+                  <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
+                  </svg>
                 </div>
-              </div>
+                <span className="text-xs font-bold text-slate-600">Gmail Scan</span>
+              </button>
+
+              <button
+                onClick={() => {
+                  chrome.tabs.create({ url: `${config.FRONTEND_URL}/dashboard`, active: true });
+                }}
+                className="flex flex-col items-center justify-center p-4 bg-white hover:bg-slate-50 border border-slate-100 rounded-2xl transition-all group"
+              >
+                <div className="w-10 h-10 rounded-xl bg-emerald-50 text-emerald-600 flex items-center justify-center mb-2 group-hover:scale-110 transition-transform">
+                  <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
+                  </svg>
+                </div>
+                <span className="text-xs font-bold text-slate-600">Web App</span>
+              </button>
             </div>
-          </>
+
+            {/* Manage Card */}
+            <button
+              onClick={() => {
+                chrome.tabs.create({ url: `${config.FRONTEND_URL}/subscriptions`, active: true });
+              }}
+              className="w-full flex items-center justify-between p-4 bg-indigo-600 hover:bg-indigo-700 rounded-2xl text-white shadow-lg transition-all active:scale-95"
+            >
+              <div className="flex items-center gap-3">
+                <div className="w-8 h-8 rounded-lg bg-white/20 flex items-center justify-center">
+                  <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 10h16M4 14h16M4 18h16" />
+                  </svg>
+                </div>
+                <span className="text-sm font-bold">Manage Subscriptions</span>
+              </div>
+              <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 opacity-70" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M14 5l7 7m0 0l-7 7m7-7H3" />
+              </svg>
+            </button>
+          </div>
         )}
 
         {view === VIEWS.ADD_DRAFT && (
-          <AddSubscriptionForm isOffline={!isLoggedIn} />
+          <div className="flex-1 overflow-y-auto p-4">
+            <AddSubscriptionForm isOffline={!isLoggedIn} />
+          </div>
         )}
 
         {view === VIEWS.ALL_SUBSCRIPTIONS && (
@@ -328,17 +449,28 @@ function App() {
         )}
 
         {view === VIEWS.SYNC_CONFLICTS && (
-          <SyncConflictResolver />
+          <div className="flex-1 overflow-y-auto p-4">
+            <SyncConflictResolver />
+          </div>
         )}
 
         {view === VIEWS.SCAN_SCREENSHOT && (
-          <ScanScreenshot />
+          <div className="flex-1 overflow-y-auto p-4">
+            <ScanScreenshot />
+          </div>
+        )}
+
+        {view === VIEWS.REVIEW_DETECTIONS && (
+          <ReviewDetections />
         )}
       </main>
 
       {/* Footer */}
-      <footer className="bg-white border-t border-gray-200 px-4 py-2 text-xs text-center text-gray-400">
-        {isLoggedIn ? 'Syncing with app.subdupes.com' : 'Not logged in — saving locally'}
+      <footer className="mt-auto px-4 py-3 bg-white border-t border-slate-100 flex items-center justify-center gap-2">
+        <div className={`w-1.5 h-1.5 rounded-full ${isLoggedIn ? 'bg-emerald-500' : 'bg-amber-500'}`}></div>
+        <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">
+          {isLoggedIn ? 'Live Sync Active' : 'Offline Mode'}
+        </p>
       </footer>
     </div>
   )

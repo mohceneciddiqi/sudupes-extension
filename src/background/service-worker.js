@@ -1,4 +1,5 @@
 import { api } from '../services/api.js';
+import { FREEMIUM_LIMIT_FALLBACK } from '../config.js';
 
 console.log('SubDupes Background Service Worker Loaded');
 
@@ -194,6 +195,37 @@ function calculateNextDate(cycle) {
     }
     next.setHours(12, 0, 0, 0);
     return next.toISOString();
+}
+
+async function checkPlanLimit() {
+    return new Promise((resolve) => {
+        chrome.storage.local.get(['userProfile', 'subscriptions'], (result) => {
+            const profile = result.userProfile;
+            const subs = result.subscriptions || [];
+
+            // If no profile, we assume freemium limits from config
+            if (!profile) {
+                resolve({
+                    allowed: subs.length < FREEMIUM_LIMIT_FALLBACK,
+                    current: subs.length,
+                    limit: FREEMIUM_LIMIT_FALLBACK,
+                    plan: 'FREEMIUM'
+                });
+                return;
+            }
+
+            const plan = profile.plan || 'FREEMIUM';
+            const current = profile.subscriptionCount || subs.length;
+            const limit = profile.maxSubscriptions || FREEMIUM_LIMIT_FALLBACK;
+
+            // -1 means unlimited
+            if (limit === -1 || plan === 'PRO' || plan === 'ENTERPRISE') {
+                resolve({ allowed: true, current, limit, plan });
+            } else {
+                resolve({ allowed: current < limit, current, limit, plan });
+            }
+        });
+    });
 }
 
 // ─── Lifecycle Events ──────────────────────────────────────────────────────
@@ -570,11 +602,50 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         }
         return;
     }
+
+    if (message?.type === 'BULK_DETECTION') {
+        console.log(`Background received ${message.data.length} bulk detections`);
+
+        chrome.storage.local.get(['detectedSubscriptions'], (result) => {
+            const existing = result.detectedSubscriptions || [];
+            // Merge new detections, avoiding exact duplicates by name and amount
+            const newDetections = message.data.filter(pkg =>
+                !existing.some(e => e.name === pkg.name && e.amount === pkg.amount)
+            );
+
+            const updated = [...existing, ...newDetections];
+            chrome.storage.local.set({ detectedSubscriptions: updated }, () => {
+                if (sender?.tab?.id) {
+                    chrome.action.setBadgeText({ text: updated.length.toString(), tabId: sender.tab.id });
+                    chrome.action.setBadgeBackgroundColor({ color: '#2563EB', tabId: sender.tab.id });
+                }
+            });
+        });
+        return;
+    }
 });
 
 // ─── Prompt Save Handler ───────────────────────────────────────────────────
 
 async function handlePromptSave(data, tabId) {
+    // 1. Check plan limits first
+    const limitStatus = await checkPlanLimit();
+    if (!limitStatus.allowed) {
+        console.warn('Plan limit reached, blocking save and showing upgrade prompt.');
+        if (tabId) {
+            chrome.tabs.sendMessage(tabId, {
+                type: 'SHOW_UPGRADE_PROMPT',
+                data: {
+                    ...data,
+                    currentCount: limitStatus.current,
+                    maxCount: limitStatus.limit,
+                    plan: limitStatus.plan
+                }
+            }).catch(() => { /* Content script may not be ready */ });
+        }
+        return;
+    }
+
     // Try to save via API first (if user is logged in)
     try {
         const token = await getAuthTokenQuick();
@@ -595,8 +666,12 @@ async function handlePromptSave(data, tabId) {
                 // Refresh cache after successful save
                 try {
                     const freshSubs = await api.getSubscriptions();
+                    const freshProfile = await api.getUserProfile();
                     subscriptionCache = freshSubs;
-                    await chrome.storage.local.set({ subscriptions: freshSubs });
+                    await chrome.storage.local.set({
+                        subscriptions: freshSubs,
+                        userProfile: freshProfile
+                    });
                 } catch { /* Non-critical */ }
 
                 if (tabId) {

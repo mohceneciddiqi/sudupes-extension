@@ -71,16 +71,23 @@ const useStore = create((set) => ({
                     'detectedDraft',
                     'subscriptions',
                     'pendingSubscriptions',
-                    'syncConflicts'
+                    'syncConflicts',
+                    'userProfile'
                 ], (result) => {
                     if (result.subscriptions) {
                         set({ subscriptions: result.subscriptions });
+                    }
+                    if (result.detectedSubscriptions?.length > 0) {
+                        set({ detectedSubscriptions: result.detectedSubscriptions });
                     }
                     if (result.pendingSubscriptions?.length > 0) {
                         set({ pendingSubscriptions: result.pendingSubscriptions });
                     }
                     if (result.syncConflicts?.length > 0) {
                         set({ syncConflicts: result.syncConflicts });
+                    }
+                    if (result.userProfile) {
+                        set({ user: result.userProfile });
                     }
                     if (result.detectedDraft) {
                         set({ draft: result.detectedDraft, view: VIEWS.ADD_DRAFT })
@@ -97,6 +104,27 @@ const useStore = create((set) => ({
 
     subscriptions: [],
     setSubscriptions: (subscriptions) => set({ subscriptions }),
+
+    detectedSubscriptions: [],
+    setDetectedSubscriptions: (detectedSubscriptions) => {
+        set({ detectedSubscriptions });
+        if (typeof chrome !== 'undefined' && chrome.storage) {
+            chrome.storage.local.set({ detectedSubscriptions });
+        }
+    },
+    removeDetectedSubscription: (id) => set((state) => {
+        const updated = state.detectedSubscriptions.filter(s => s.id !== id);
+        if (typeof chrome !== 'undefined' && chrome.storage) {
+            chrome.storage.local.set({ detectedSubscriptions: updated });
+        }
+        return { detectedSubscriptions: updated };
+    }),
+    clearDetectedSubscriptions: () => {
+        set({ detectedSubscriptions: [] });
+        if (typeof chrome !== 'undefined' && chrome.storage) {
+            chrome.storage.local.remove('detectedSubscriptions');
+        }
+    }
 }))
 
 export default useStore

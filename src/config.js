@@ -14,3 +14,4 @@ const CONFIG = {
 const ENV = import.meta.env.MODE === 'production' ? 'production' : 'development';
 
 export const config = CONFIG[ENV];
+export const FREEMIUM_LIMIT_FALLBACK = 3;

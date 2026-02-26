@@ -51,6 +51,12 @@ function buildPromptHTML(message) {
         primaryBtnText = '📥 Import Now';
         headerGradient = 'linear-gradient(135deg, #8B5CF6 0%, #6D28D9 100%)';
         btnGradient = 'linear-gradient(135deg, #8B5CF6 0%, #6D28D9 100%)';
+    } else if (type === 'SHOW_UPGRADE_PROMPT') {
+        titleText = 'Storage Limit Reached ⚠️';
+        subtitleText = `You've used all <b>${data.maxCount}</b> slots on your ${data.plan.toLowerCase()} plan. Upgrade to Enterprise for unlimited tracking!`;
+        primaryBtnText = '🚀 Upgrade Now';
+        headerGradient = 'linear-gradient(135deg, #EF4444 0%, #B91C1C 100%)';
+        btnGradient = 'linear-gradient(135deg, #EF4444 0%, #DC2626 100%)';
     }
 
     return `
@@ -63,7 +69,7 @@ function buildPromptHTML(message) {
         border-radius: 16px;
         box-shadow: 0 20px 60px rgba(0, 0, 0, 0.15), 0 0 0 1px rgba(0, 0, 0, 0.05);
         z-index: 2147483647;
-        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+        font-family: 'Outfit', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
         overflow: hidden;
         animation: sdPromptSlideIn 0.4s cubic-bezier(0.16, 1, 0.3, 1);
         transform-origin: bottom right;
@@ -280,6 +286,16 @@ function bindPromptActions(message) {
                 return;
             }
 
+            if (type === 'SHOW_UPGRADE_PROMPT') {
+                try {
+                    chrome.tabs.create({ url: 'https://app.subdupes.com/settings?tab=billing', active: true });
+                } catch (err) {
+                    window.open('https://app.subdupes.com/settings?tab=billing', '_blank');
+                }
+                removePrompt();
+                return;
+            }
+
             // Send save request to background
             const cleanData = {
                 name: data.name,
@@ -338,7 +354,8 @@ function bindPromptActions(message) {
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (message.type === 'SHOW_SUBSCRIPTION_PROMPT' ||
         message.type === 'SHOW_ALREADY_SUBSCRIBED_TOAST' ||
-        message.type === 'SHOW_RECEIPT_IMPORT_PROMPT') {
+        message.type === 'SHOW_RECEIPT_IMPORT_PROMPT' ||
+        message.type === 'SHOW_UPGRADE_PROMPT') {
         showPrompt(message);
     }
 });
